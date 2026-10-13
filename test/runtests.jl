@@ -1,6 +1,7 @@
 using ParkedWorkers
 using ParkedWorkers: nworkers
 using Test
+using InteractiveUtils: code_llvm
 
 const NW = nworkers()
 @info "Testing ParkedWorkers" VERSION Threads.nthreads(:default) Threads.nthreads(:interactive)
@@ -400,6 +401,20 @@ ParkedWorkers.neutral(::MaxAbs, x) = zero(x)
             end
             wait(t)
             @test psum(collect(1:100)) == 5050
+        end
+    end
+
+    @testset "no acquire loads before the serial loop" begin
+        # The checks inlined in front of the serial fallback loop must only use relaxed
+        # loads: LLVM's MemDep treats acquire loads as clobbers, which keeps GVN from
+        # merging loads (e.g., array sizes) across them. All stronger atomics belong in
+        # the non-inlined `run_chunks` / `run_fold`.
+        for (f, T) in ((add_one!, Tuple{Vector{Float64}}), (psum, Tuple{Vector{Float64}}),
+                       (add_one_f!, Tuple{Vector{Float64}}))
+            ir = sprint(io -> code_llvm(io, f, T; debuginfo = :none))
+            @test !occursin(r"load atomic[^\n]*\b(acquire|seq_cst)\b", ir)
+            @test !occursin(r"\b(cmpxchg|atomicrmw|fence)\b", ir)
+            @test !occursin("jl_generating_output", ir)
         end
     end
 

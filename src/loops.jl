@@ -9,17 +9,19 @@
 
 Number of chunks a parallel loop over `itr` would be split into right now: at most one per
 thread of the `:default` thread pool and at most one per element. `1` means that the loop
-runs serially, which is the case with a single thread, during precompilation, inside
-another parallel loop, and while another task runs a parallel loop.
+runs serially, which is the case with a single thread, inside another parallel loop, and
+while another task runs a parallel loop. (During precompilation, loops also run serially,
+but that is decided later.)
 """
 @inline nchunks(itr) = nchunks_for_length(plength(itr))
 
+# Inlined in front of the serial loop: only plain and relaxed loads here (see
+# `pool_busy`). Precompilation is detected later, in `acquire_pool`.
 @inline function nchunks_for_length(len::Int)
     len <= 1 && return 1
     nw = nworkers()
     nw == 1 && return 1
     pool_busy() && return 1
-    generating_output() && return 1
     return min(nw, len)
 end
 

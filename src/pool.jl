@@ -432,7 +432,10 @@ function Pool()
         tid2worker, [SleepFlag() for _ in 1:nw], ChunkCounter(),
         Any[nothing for _ in 1:nw], zeros(Int, nw), is_oversubscribed()
     )
-    for (k, tid) in enumerate(tids)
+    # A new task inherits the dynamic scope of the task that creates it. The workers are
+    # created without one, so that they neither keep the scope of the first caller alive
+    # nor miss the fast path of `run_job_in_scope` for callers without a scope.
+    @enter_scope nothing for (k, tid) in enumerate(tids)
         task = Task(WorkerCode(pool, k))
         task.sticky = true
         ccall(:jl_set_task_tid, Cint, (Any, Cint), task, tid - 1)

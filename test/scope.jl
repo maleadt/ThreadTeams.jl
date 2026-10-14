@@ -27,3 +27,21 @@
     @test all(==(1), Base.invoke_in_world(w, pw_world_h))
     @test all(==(2), Base.invokelatest(pw_world_h))
 end
+
+@testset "workers are created without a scope" begin
+    # A new task inherits the scope of the task that creates it; the workers must not keep
+    # the scope of the first caller (nor install a handler for later callers without one)
+    if NW > 1 && isdefined(Base, :ScopedValues)
+        ThreadTeams.shutdown!()
+        sv = Base.ScopedValues.ScopedValue(0)
+        r = zeros(Int, 64)
+        Base.ScopedValues.with(sv => 7) do
+            tforeach(i -> (r[i] = sv[]), eachindex(r); scheduler = team)
+        end
+        @test all(==(7), r)
+        pool = @atomic ThreadTeams.POOL.pool
+        @test all(t -> getfield(t, :scope) === nothing, pool.tasks)
+        tforeach(i -> (r[i] = sv[]), eachindex(r); scheduler = team)
+        @test all(==(0), r)
+    end
+end

@@ -30,6 +30,19 @@
 # compare-and-swap. A loop nested in a region (started by a chunk) runs serially; a loop
 # started concurrently by another task runs on ordinary tasks (`Threads.@spawn`) instead.
 #
+# Memory orderings (tla/README.md has the model that checks them):
+# - The region data (`job`, `nchunks`, ...) is stored with relaxed stores and published by
+#   the release store of each command; the worker's sequentially consistent claim of the
+#   command (an acquire) makes it visible to it. Relaxed loads suffice in the spin loop.
+# - A worker's results (`errs`, the partials buffer) are published by its release store
+#   `cmd = 0` and acquired by the load of `wait_idle`.
+# - The sleep handshake (Dekker): the worker stores `sleeping = true` and then loads `cmd`,
+#   both sequentially consistent; the dispatcher's command stores are followed by one
+#   sequentially consistent fence and the loads of `wake_chunk` are sequentially
+#   consistent. Either the worker sees its command, or the waker sees that it sleeps.
+# - Everything else (the steal, the re-notify of `wait_idle`, `sleeping = false`) is
+#   relaxed: a stale value only costs a spurious notification or a chunk run by the caller.
+#
 # With the `GreedyTeamScheduler`, the loop is split into more chunks than workers. The
 # region then runs a `GreedyJob` on `p` participants (the caller and `p - 1` workers), each
 # of which claims chunk indices from a shared counter until all chunks are taken.
@@ -329,10 +342,15 @@ function wait_for_command(
     t0 = time_ns()
     tyield = tevents = t0
     while true
-        cmd = @atomic :acquire ws.cmd
+        # Relaxed: the claim below acquires the region data (published by the release store
+        # of the command)
+        cmd = @atomic :monotonic ws.cmd
         if cmd > 0
-            # Claim the chunk; fails if the dispatcher stole it in the meantime
-            (@atomicreplace ws.cmd cmd => RUNNING).success && return cmd
+            # Claim the chunk; fails if the dispatcher stole it in the meantime.
+            # Sequentially consistent: a full barrier before the loads of `wake_children`
+            # (the Dekker handshake with the children of the chunk, see `wake_children`)
+            (@atomicreplace :sequentially_consistent :monotonic ws.cmd cmd => RUNNING).success &&
+                return cmd
         elseif cmd == STOP
             return cmd
         end
@@ -352,7 +370,8 @@ function wait_for_command(
                 if (@atomic ws.cmd) <= 0
                     wait(ev)
                 end
-                @atomic flag.sleeping = false
+                # Relaxed: a waker that still sees `true` only notifies once too often
+                @atomic :monotonic flag.sleeping = false
                 spins = 0
                 t0 = tyield = tevents = time_ns()
                 continue
@@ -481,7 +500,8 @@ end
 # run serially. Only called from non-inlined functions.
 @inline function acquire_pool()
     generating_output() && return nothing
-    (@atomicreplace POOL.busy false => true).success || return nothing
+    # Acquire: pairs with the release store of `release_pool`
+    (@atomicreplace :acquire :monotonic POOL.busy false => true).success || return nothing
     @atomic :monotonic POOL.owner = current_task()
     pool = @atomic :acquire POOL.pool
     if pool === nothing
@@ -558,8 +578,10 @@ end
     while (@atomic :acquire ws.cmd) != 0
         spins += 1
         if spins & 1023 == 0
-            # Defensive: wake the worker if it went to sleep with a pending command
-            @atomic((@inbounds pool.sleepflags[k]).sleeping) && notify(@inbounds pool.events[k])
+            # Defensive: wake the worker if it went to sleep with a pending command (a
+            # relaxed load: this is the fallback of the handshake in `wake_chunk`)
+            @atomic(:monotonic, (@inbounds pool.sleepflags[k]).sleeping) &&
+                notify(@inbounds pool.events[k])
             # A worker task can only die through an exception thrown into it from outside
             # (e.g. an interrupt); with its command still set, the region would wait forever
             istaskdone(@inbounds pool.tasks[k]) && return false
@@ -597,9 +619,13 @@ end
 # Called by whoever claims chunk `chunk` of `n`, before running it: wake the workers of
 # chunks `2chunk` and `2chunk + 1` (a binary tree, so that waking `n` sleeping workers
 # takes O(log n) steps). The dispatcher stores the commands in decreasing chunk order, so a
-# child's command is stored before its parent's; with the sequentially consistent claim of
-# the parent and loads here, either the child sees its command before it sleeps, or we see
-# that it sleeps. (`wait_idle` also re-notifies sleeping workers with pending commands.)
+# child's command is stored before its parent's. For the dispatcher's own wake-ups, the
+# fence after its stores and the sequentially consistent loads here guarantee that either
+# the child sees its command before it sleeps, or we see that it sleeps. For a worker, the
+# full barrier of its sequentially consistent claim does the same on x86 and AArch64;
+# the C11 model alone does not promise it (see tla/README.md). A wake-up that is lost
+# this way costs no correctness: the dispatcher runs the chunk itself (stealing), and
+# `wait_idle` re-notifies sleeping workers with pending commands.
 @inline function wake_children(pool::Pool, chunk::Int, n::Int, skip::Int)
     c = 2chunk
     c <= n && wake_chunk(pool, c, skip)
@@ -657,11 +683,14 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
         end
         # Run the chunks not claimed by their worker yet. A load first: a compare-and-swap on
         # a line that the worker has just written takes it from the worker's cache (and the
-        # worker's final store `cmd = 0` takes it back); a load only shares it.
+        # worker's final store `cmd = 0` takes it back); a load only shares it. Relaxed:
+        # nothing of the worker's is read after a successful steal, and `wait_workers`
+        # acquires the results of the workers that did claim their chunk.
         for chunk in 2:n
             k = worker_for_chunk(chunk, skip)
             ws = @inbounds pool.workers[k]
-            if (@atomic :acquire ws.cmd) == chunk && (@atomicreplace ws.cmd chunk => 0).success
+            if (@atomic :monotonic ws.cmd) == chunk &&
+                    (@atomicreplace :monotonic ws.cmd chunk => 0).success
                 # We took over the chunk, and with it the wake-ups of its children
                 wake_children(pool, chunk, n, skip)
                 try
@@ -694,7 +723,7 @@ end
 @inline function cancel_chunks(pool::Pool, from, n, skip)
     for chunk in from:n
         k = worker_for_chunk(chunk, skip)
-        @atomicreplace (@inbounds pool.workers[k]).cmd chunk => 0
+        @atomicreplace :monotonic (@inbounds pool.workers[k]).cmd chunk => 0
     end
     return nothing
 end
@@ -916,7 +945,7 @@ task to finish first. The next parallel loop starts a new pool.
 Throws an error when called from inside a parallel loop.
 """
 function shutdown!()
-    while !(@atomicreplace POOL.busy false => true).success
+    while !(@atomicreplace :acquire :monotonic POOL.busy false => true).success
         # The region can not end while we wait in one of its chunks
         if @atomic(POOL.owner) === current_task() || in_worker()
             error("ThreadTeams.shutdown! called from inside a parallel loop")
@@ -979,7 +1008,8 @@ function parallel_phase(f)
         if nworkers() > 1 && !generating_output()
             # Start the workers if needed, and wake up the sleeping ones
             pool = @atomic :acquire POOL.pool
-            if pool === nothing && (@atomicreplace POOL.busy false => true).success
+            if pool === nothing &&
+                    (@atomicreplace :acquire :monotonic POOL.busy false => true).success
                 try
                     pool = @atomic :acquire POOL.pool
                     pool === nothing && (pool = new_pool())

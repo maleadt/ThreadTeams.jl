@@ -543,7 +543,9 @@ end
 end
 
 # Spin until worker `k` is idle. Yields now and then, so that a worker (or a chunk that
-# yields) sharing the thread of the waiting task can make progress.
+# yields) sharing the thread of the waiting task can make progress. Returns `false` if the
+# worker died with its command still set (see `dead_worker_error`); the caller then waits
+# for the other workers before it throws, so that no worker is left running a chunk.
 @inline function wait_idle(pool::Pool, k::Int)
     ws = @inbounds pool.workers[k]
     spins = 0
@@ -554,14 +556,14 @@ end
             @atomic((@inbounds pool.sleepflags[k]).sleeping) && notify(@inbounds pool.events[k])
             # A worker task can only die through an exception thrown into it from outside
             # (e.g. an interrupt); with its command still set, the region would wait forever
-            istaskdone(@inbounds pool.tasks[k]) && dead_worker_error(k)
+            istaskdone(@inbounds pool.tasks[k]) && return false
             yield()
         else
             cpu_pause()
             GC.safepoint()
         end
     end
-    return nothing
+    return true
 end
 
 @noinline function dead_worker_error(k::Int)
@@ -619,7 +621,12 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
         for chunk in n:-1:2
             k = worker_for_chunk(chunk, skip)
             # A worker can still be busy if a previous region was interrupted
-            wait_idle(pool, k)
+            if !wait_idle(pool, k)
+                # Take back the chunks already handed out before giving up
+                cancel_chunks(pool, chunk + 1, n, skip)
+                wait_workers(pool, chunk + 1, n, skip)
+                dead_worker_error(k)
+            end
             @inbounds pool.errs[k] = nothing
             # Release stores: their cache-line transfers overlap in the store buffer, where
             # sequentially consistent stores (`xchg` on x86) would each wait for the line (about
@@ -638,11 +645,8 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
         catch
             # Cancel the chunks that were not started and wait for the others: never leave
             # workers running when returning from the region
-            for chunk in 2:n
-                k = worker_for_chunk(chunk, skip)
-                @atomicreplace (@inbounds pool.workers[k]).cmd chunk => 0
-            end
-            wait_workers(pool, n, skip)
+            cancel_chunks(pool, 2, n, skip)
+            wait_workers(pool, 2, n, skip)
             rethrow()
         end
         # Run the chunks not claimed by their worker yet. A load first: a compare-and-swap on
@@ -661,7 +665,7 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
                 end
             end
         end
-        wait_workers(pool, n, skip)
+        wait_workers(pool, 2, n, skip)
         for chunk in 2:n
             k = worker_for_chunk(chunk, skip)
             err = @inbounds pool.errs[k]
@@ -680,10 +684,24 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
     return nothing
 end
 
-@inline function wait_workers(pool::Pool, n, skip)
-    for chunk in 2:n
-        wait_idle(pool, worker_for_chunk(chunk, skip))
+# Take the chunks `from:n` away from the workers that have not claimed them yet
+@inline function cancel_chunks(pool::Pool, from, n, skip)
+    for chunk in from:n
+        k = worker_for_chunk(chunk, skip)
+        @atomicreplace (@inbounds pool.workers[k]).cmd chunk => 0
     end
+    return nothing
+end
+
+# Wait until the workers of chunks `from:n` are idle. A dead worker is reported only after
+# the others have finished: the region's slot and buffers are released afterwards.
+@inline function wait_workers(pool::Pool, from, n, skip)
+    dead = 0
+    for chunk in from:n
+        k = worker_for_chunk(chunk, skip)
+        wait_idle(pool, k) || (dead = k)
+    end
+    dead == 0 || dead_worker_error(dead)
     return nothing
 end
 
@@ -840,7 +858,9 @@ struct StoreChunk{F, T}
     f::F
     buf::Vector{T}
 end
-@inline (s::StoreChunk)(chunk) = (@inbounds s.buf[chunk] = s.f(chunk); nothing)
+# No `@inbounds`: should a worker outlive its region (an interrupted caller), it must not
+# write past the end of the emptied buffer
+@inline (s::StoreChunk)(chunk) = (s.buf[chunk] = s.f(chunk); nothing)
 
 @inline function fold_partials(op::Op, buf::Vector, n::Int) where {Op}
     acc = @inbounds buf[1]

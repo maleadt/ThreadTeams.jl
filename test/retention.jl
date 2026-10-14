@@ -45,11 +45,17 @@ end
         @test all(isnothing, pool.greedy_errs)
     end
     if NW > 1
-        pool = @atomic ThreadTeams.POOL.pool
-        @test all(isempty, values(pool.buffers))
-        # the slots are undefined again, as a fresh `RefValue{F}()` is (except for isbits
-        # chunk functions, which hold no references)
-        @test all(slot -> isbitstype(eltype(slot)) || !isdefined(slot, :x), values(pool.slots))
-        @test any(slot -> !isdefined(slot, :x), values(pool.slots))
+        # the partials buffers of the reductions above are empty again
+        @test isempty(ThreadTeams.static_buffer(Float64))
+        @test isempty(ThreadTeams.static_buffer(Vector{Float64}))
+        # and a cleared slot is undefined again, as a fresh `RefValue{F}()` is
+        f = let v = zeros(1)
+            i -> v[i]
+        end
+        slot = ThreadTeams.job_slot(typeof(f))
+        slot[] = f
+        @test isdefined(slot, :x)
+        ThreadTeams.clear_slot!(slot)
+        @test !isdefined(slot, :x)
     end
 end

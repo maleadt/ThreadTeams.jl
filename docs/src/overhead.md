@@ -12,17 +12,17 @@ Minima are more reliable than medians.**
 
 | mechanism | 1.12 `-t 8` (8+1 interactive) | 1.12 `-t 8,0` | 1.13 `-t 8` | 1.13 `-t 8,0` | allocations per loop |
 |---|---|---|---|---|---|
-| `tforeach`, `scheduler = TeamScheduler()` | 0.33 / 0.38 | 0.36 / 0.45 | 0.35 / 0.42 | 0.37 / 0.43 | 0 |
-| `tmapreduce`, `scheduler = TeamScheduler()` | 0.36 / 0.46 | 0.35 / 0.42 | 0.37 / 0.45 | 0.35 / 0.45 | 0 |
-| `@tasks` with `@set scheduler = TeamScheduler()` | 0.33 / 0.40 | 0.36 / 0.44 | 0.34 / 0.40 | 0.37 / 0.44 | 0 |
-| `tforeach`, `scheduler = GreedyTeamScheduler()` (32 chunks) | 0.95 / 1.48 | 0.88 / 1.47 | 0.74 / 0.93 | 0.74 / 0.94 | 0 |
-| Polyester `@batch` (v0.7.18) | 0.24 / 0.37 | 0.24 / 0.40 | 0.23 / 0.35* | 0.24 / 0.37* | 0 |
-| `Threads.@threads :static` | 10.72 / **113** | 2.13 / 2.60 | 11.21 / **113** | 1.70 / 2.65 | 42 (2.9 KB) |
-| `Threads.@threads :dynamic` | 2.36 / 3.87 | 2.40 / 3.80 | 2.18 / 3.77 | 2.27 / 3.54 | 42 (2.9 KB) |
-| OhMyThreads `tforeach` (v0.8.7, `DynamicScheduler`) | 4.30 / 5.23 | 4.22 / 5.15 | 3.43 / 4.50 | 3.44 / 4.43 | 66–68 (3.6 KB) |
-| OhMyThreads `tforeach`, `scheduler = :static` | 16.88 / **117** | 4.78 / 5.19 | 12.95 / **116** | 4.33 / 4.72 | 67–69 (3.6 KB) |
-| OhMyThreads `tmapreduce(+)` | 3.99 / 4.95 | 4.03 / 4.90 | 3.32 / 4.30 | 3.39 / 4.36 | 64–66 (3.6 KB) |
-| KernelAbstractions `foreach_index` (v0.10.0) | 3.08 / 3.91 | 3.00 / 3.99 | 3.30 / 5.91 | 3.16 / 3.83 | 5 (96 B) |
+| `tforeach`, `scheduler = TeamScheduler()` | 0.26 / 0.31 | 0.32 / 0.38 | 0.30 / 0.34 | 0.27 / 0.34 | 0 |
+| `tmapreduce`, `scheduler = TeamScheduler()` | 0.30 / 0.35 | 0.33 / 0.38 | 0.31 / 0.37 | 0.30 / 0.37 | 0 |
+| `@tasks` with `@set scheduler = TeamScheduler()` | 0.29 / 0.33 | 0.30 / 0.37 | 0.29 / 0.35 | 0.28 / 0.34 | 0 |
+| `tforeach`, `scheduler = GreedyTeamScheduler()` (32 chunks) | 0.90 / 1.33 | 0.89 / 1.45 | 0.76 / 0.91 | 0.73 / 0.91 | 0 |
+| Polyester `@batch` (v0.7.18) | 0.23 / 0.37 | 0.26 / 0.38 | 0.23 / 0.35* | 0.24 / 0.37* | 0 |
+| `Threads.@threads :static` | 11.57 / **113** | 1.86 / 2.77 | 10.92 / **114** | 1.65 / 2.67 | 42 (2.9 KB) |
+| `Threads.@threads :dynamic` | 2.46 / 3.94 | 2.52 / 3.88 | 2.36 / 3.80 | 2.27 / 3.64 | 42 (2.9 KB) |
+| OhMyThreads `tforeach` (v0.8.7, `DynamicScheduler`) | 4.22 / 5.35 | 4.31 / 5.27 | 3.58 / 4.62 | 3.53 / 4.45 | 66–68 (3.6 KB) |
+| OhMyThreads `tforeach`, `scheduler = :static` | 17.87 / **118** | 4.63 / 5.30 | 11.09 / **115** | 4.23 / 4.64 | 67–69 (3.6 KB) |
+| OhMyThreads `tmapreduce(+)` | 3.98 / 5.04 | 4.10 / 5.03 | 3.52 / 4.39 | 3.34 / 4.26 | 64–66 (3.6 KB) |
+| KernelAbstractions `foreach_index` (v0.10.0) | 3.24 / 4.61 | 3.17 / 4.48 | 3.13 / 4.20 | 3.08 / 4.38 | 5 (96 B) |
 | serial loop | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0 |
 
 - Pass the scheduler as an object. A symbol (`scheduler = :team`, `@set scheduler = :team`)
@@ -52,25 +52,52 @@ same loop and machine as above, Julia 1.12, `-t 8`):
 
 | | cycles | instructions | L1d misses | last-level cache misses |
 |---|---|---|---|---|
-| `tforeach`, `TeamScheduler()` | 1650–2000 | 1700–1750 | 25–32 | 15–17 |
-| `tmapreduce`, `TeamScheduler()` | 1900–2050 | 1800–1840 | 31–35 | 16–18 |
-| Polyester `@batch` | 1560–1760 | 500 | 35–40 | 16–19 |
+| `tforeach`, `TeamScheduler()` | 1460–1590 | 1690–1710 | 20–24 | 11 |
+| `tmapreduce`, `TeamScheduler()` | 1520–1570 | 1750–1760 | 23–29 | 14–15 |
+| Polyester `@batch` | 1620–1670 | 500 | 35–36 | 16 |
 | serial loop | 16 | 70 | 0 | 0 |
 
-(Ranges over four runs; the spread comes from other jobs on the machine.)
+(Ranges over three runs; the spread comes from other jobs on the machine.)
 
 The cache misses are the hand-off: every worker's command field is a cache line that moves
-between the calling thread's core and the worker's core. A `perf` profile of the calling
-thread puts more than half of its time into that hand-off (storing the commands, checking
-afterwards which chunks the workers have not taken, and waiting for the last worker). The
-two `IdDict` lookups (chunk function slot, partials buffer) cost about 1%; OhMyThreads'
-entry (`tmapreduce` keyword handling, the scheduler object) and `mapreduce` over the first
-chunk account for the remaining instructions, which is where the team executes about three
-times as many instructions as Polyester at a similar cycle count.
+between the calling thread's core and the worker's core, twice per loop (the worker's claim
+and its completion). Timestamps at the stages of a loop (8 threads, 64 iterations, median
+nanoseconds; the timers themselves add about 20 ns per stage) show where the calling
+thread's time goes:
 
-Two details keep the hand-off cheap: the command stores are release stores followed by one
-fence rather than sequentially consistent stores (an `xchg` per store would wait for each
-cache line in turn, where plain stores overlap in the store buffer), and the check for
-untaken chunks loads before it compare-and-swaps (a failed compare-and-swap would still take
-the line away from the worker, which then has to take it back). Together they removed about
-a quarter of the calling thread's cycles.
+| stage of the calling thread | ns |
+|---|---|
+| OhMyThreads' entry, `run_fold`, fold of the partials, release | 150 |
+| publishing the region and storing the seven commands | 90 |
+| chunk 1 (`mapreduce` over 8 elements) | 30 |
+| checking which chunks the workers have not taken (seven loads) | 140 |
+| waiting for the last worker | 20–100 |
+| clearing the slot, the scope and the exceptions | 20 |
+
+A worker claims its chunk within about 20 ns of the stores and is done about 100–150 ns
+later, of which the chunk itself is about 60 ns. The rest of its time is the wake-up check
+for its two children in the binary tree and the world-age call into the chunk function.
+
+Four details keep the hand-off at that level:
+
+- The command stores are release stores followed by one fence rather than sequentially
+  consistent stores: an `xchg` per store would wait for each cache line in turn, where
+  plain stores overlap in the store buffer.
+- The check for untaken chunks loads before it compare-and-swaps: a failed
+  compare-and-swap would still take the line away from the worker, which then has to take
+  it back.
+- Each worker's `sleeping` flag sits on its own cache line, apart from its command. The
+  flag is written only when the worker goes to sleep or wakes up, so the two flag loads of
+  every wake-up check hit a line that stays shared between all cores, instead of the line
+  the worker is claiming its chunk on. Before this, the wake-up checks cost the calling
+  thread 70 ns and every worker 50–120 ns per loop.
+- The slot that hands the chunk function to the workers and the buffer for the partial
+  results are constants embedded by `@generated` functions, one per type, instead of
+  entries of an `IdDict`: the two lookups cost about 50 ns per loop.
+
+The remaining difference to Polyester is instruction count on the calling thread
+(OhMyThreads' entry with its keyword arguments and scheduler object, the job struct,
+`mapreduce` over the first chunk): about three times Polyester's at a similar cycle count.
+The exception handlers were also reduced to one per loop on the calling thread and one for
+the lifetime of each worker; entering the caller's dynamic scope installs a handler only
+when the caller has a scope at all (a `ScopedValue` or logger in effect).

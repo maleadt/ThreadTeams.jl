@@ -10,7 +10,7 @@ There is one sticky worker task per thread of the `:default` thread pool. A para
 splits its range into one contiguous chunk per thread, runs chunk 1 on the calling task and
 hands the other chunks to the workers. After a loop, idle workers spin for a short while
 (100 µs by default) before they go to sleep, so loops that follow each other closely do not
-pay for creating, scheduling and waking up tasks. Starting a loop costs about 0.35 µs and
+pay for creating, scheduling and waking up tasks. Starting a loop costs about 0.3 µs and
 allocates nothing after the first run of that loop, against 2–4 µs and about 3 KB for
 `Threads.@threads` or OhMyThreads' default scheduler (see [Overhead](@ref)).
 

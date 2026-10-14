@@ -12,7 +12,7 @@
             skip = get(pool.tid2worker, Threads.threadid(), 0)
             sleep(0.002)
             @test all(
-                k -> k == skip || !(@atomic pool.workers[k].sleeping),
+                k -> k == skip || !(@atomic pool.sleepflags[k].sleeping),
                 eachindex(pool.workers)
             )
         end

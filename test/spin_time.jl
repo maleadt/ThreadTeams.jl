@@ -12,7 +12,7 @@ function sleeping_after_long_chunk1()
     end
     pool = @atomic ThreadTeams.POOL.pool
     skip = get(pool.tid2worker, Threads.threadid(), 0)
-    return [(@atomic pool.workers[ThreadTeams.worker_for_chunk(c, skip)].sleeping) for c in 2:NW]
+    return [(@atomic pool.sleepflags[ThreadTeams.worker_for_chunk(c, skip)].sleeping) for c in 2:NW]
 end
 
 @testset "spin time counts from the end of the loop" begin

@@ -125,11 +125,21 @@ ChunkCounter() = ChunkCounter(ntuple(_ -> 0, Val(7)), 0, ntuple(_ -> 0, Val(8)))
 
 mutable struct WorkerState
     @atomic cmd::Int
-    @atomic sleeping::Bool
     # Padding: keep the fields of different workers on different cache lines
-    _pad::NTuple{14, Int}
+    _pad::NTuple{15, Int}
 end
-WorkerState() = WorkerState(0, false, ntuple(_ -> 0, Val(14)))
+WorkerState() = WorkerState(0, ntuple(_ -> 0, Val(15)))
+
+# Whether a worker is asleep (or about to be), on a cache line of its own, apart from its
+# command: it is written only when the worker goes to sleep or wakes up, so the loads of
+# `wake_chunk` (two per chunk, on the critical path of every worker) hit a line that stays
+# shared between all cores, instead of the line that the worker is claiming its chunk on.
+mutable struct SleepFlag
+    _pad0::NTuple{8, Int}
+    @atomic sleeping::Bool
+    _pad1::NTuple{8, Int}
+end
+SleepFlag() = SleepFlag(ntuple(_ -> 0, Val(8)), false, ntuple(_ -> 0, Val(8)))
 
 mutable struct Pool
     # The current parallel region, written by the dispatcher before it hands out chunks:
@@ -148,12 +158,7 @@ mutable struct Pool
     const errs::Vector{Any}
     # `tid2worker[tid]`: index of the worker running on thread `tid`, or `0`
     const tid2worker::Vector{Int}
-    # One `RefValue{F}` per chunk function type `F`, and one partials buffer per result type
-    # of a reduction. Only accessed while holding `POOL.busy`. Both are cleared after every
-    # region, so that the chunk function (and what it captures) and the partial results can
-    # be collected; they are allocated once per type.
-    const slots::IdDict{Type, Any}
-    const buffers::IdDict{Type, Any}
+    const sleepflags::Vector{SleepFlag}
     # Greedy regions: the chunk counter, and per participant the exception it caught and
     # the chunk that threw it
     const counter::ChunkCounter
@@ -252,6 +257,11 @@ end
 # The dynamic scope of the caller, and a macro to run code in it. Julia ≥ 1.11 keeps
 # `ScopedValue`s and the logger in the task's scope; on Julia 1.10, ScopedValues.jl and
 # `with_logger` keep them in the task's `logstate`.
+# The dynamic scope of the caller, and a macro to run code in it. Julia ≥ 1.11 keeps
+# `ScopedValue`s and the logger in the task's scope; on Julia 1.10, ScopedValues.jl and
+# `with_logger` keep them in the task's `logstate`. (The scope of a started task can not be
+# set directly; the `tryfinally` form installs an exception handler, which `run_job_in_scope`
+# avoids when the scope is already the current one.)
 @static if isdefined(Core, :current_scope)
     @inline current_scope() = Core.current_scope()
     macro enter_scope(scope, ex)
@@ -302,14 +312,22 @@ function run_job_in_scope(pool::Pool, chunk::Int)
     slot = @atomic :monotonic pool.job
     scope = @atomic :monotonic pool.scope
     world = @atomic :monotonic pool.world
-    @enter_scope scope Core._call_in_world(world, run_job, slot, chunk)
+    if scope === current_scope()
+        # The common case (no `ScopedValue` or logger set by the caller): no scope to enter,
+        # and no exception handler for it
+        Core._call_in_world(world, run_job, slot, chunk)
+    else
+        @enter_scope scope Core._call_in_world(world, run_job, slot, chunk)
+    end
     return nothing
 end
 
 # Wait until `ws.cmd` is non-zero: spin for `SPIN_NS` nanoseconds after the end of the
 # parallel region (or for as long as a `parallel_phase` is active), then sleep on `ev`. Go
 # to sleep right away when another task could run on this thread.
-function wait_for_command(ws::WorkerState, ev::Base.Event, oversubscribed::Bool)
+function wait_for_command(
+        ws::WorkerState, flag::SleepFlag, ev::Base.Event, oversubscribed::Bool
+    )
     spins = 0
     t0 = time_ns()
     tyield = tevents = t0
@@ -331,13 +349,13 @@ function wait_for_command(ws::WorkerState, ev::Base.Event, oversubscribed::Bool)
             pool_busy() && (t0 = now)
             spun_out = now - t0 > SPIN_NS[]
             if (spun_out && PHASE[] == 0) || other_work()
-                @atomic ws.sleeping = true
                 # Re-check after announcing that we sleep: either we see the command
                 # here, or the dispatcher sees `sleeping` and notifies `ev`.
+                @atomic flag.sleeping = true
                 if (@atomic ws.cmd) <= 0
                     wait(ev)
                 end
-                @atomic ws.sleeping = false
+                @atomic flag.sleeping = false
                 spins = 0
                 t0 = tyield = tevents = time_ns()
                 continue
@@ -374,22 +392,31 @@ end
 function worker_loop(pool::Pool, k::Int)
     ws = pool.workers[k]
     ev = pool.events[k]
+    flag = pool.sleepflags[k]
     while true
-        cmd = wait_for_command(ws, ev, pool.oversubscribed)
-        cmd == STOP && break
-        wake_children(
-            pool, cmd, @atomic(:monotonic, pool.nchunks),
-            @atomic(:monotonic, pool.skip)
-        )
+        # One exception handler for the lifetime of the worker, not one per chunk (an
+        # `enter` costs about as much as a small chunk); a chunk that throws lands in the
+        # `catch`, which records the exception and re-enters the loop
         try
-            run_job_in_scope(pool, cmd)
+            while true
+                cmd = wait_for_command(ws, flag, ev, pool.oversubscribed)
+                if cmd == STOP
+                    @atomic :release ws.cmd = 0
+                    return nothing
+                end
+                wake_children(
+                    pool, cmd, @atomic(:monotonic, pool.nchunks),
+                    @atomic(:monotonic, pool.skip)
+                )
+                run_job_in_scope(pool, cmd)
+                @atomic :release ws.cmd = 0
+            end
         catch err
             pool.errs[k] = CapturedException(err, catch_backtrace())
+            @atomic :release ws.cmd = 0
         end
-        @atomic :release ws.cmd = 0
     end
-    @atomic :release ws.cmd = 0
-    return nothing
+    return
 end
 
 function Pool()
@@ -402,7 +429,7 @@ function Pool()
     pool = Pool(
         nothing, 0, 0, nothing, nothing, [WorkerState() for _ in 1:nw],
         [Base.Event(true) for _ in 1:nw], Task[], Any[nothing for _ in 1:nw],
-        tid2worker, IdDict{Type, Any}(), IdDict{Type, Any}(), ChunkCounter(),
+        tid2worker, [SleepFlag() for _ in 1:nw], ChunkCounter(),
         Any[nothing for _ in 1:nw], zeros(Int, nw), is_oversubscribed()
     )
     for (k, tid) in enumerate(tids)
@@ -475,9 +502,12 @@ end
 end
 
 # The slot that hands the chunk function of type `F` to the workers: a `RefValue{F}` that
-# is already allocated, so storing the function does not allocate.
-@noinline function job_slot(pool::Pool, ::Type{F}) where {F}
-    return get!(() -> Base.RefValue{F}(), pool.slots, F)::Base.RefValue{F}
+# is already allocated, so storing the function does not allocate. One per type `F`, created
+# when the generated function is first specialized for `F` and embedded in its body as a
+# constant, so that getting it costs nothing (a dictionary lookup keyed by the type costs
+# about 25 ns). Only used while holding `POOL.busy`, and cleared after every region.
+@generated function job_slot(::Type{F}) where {F}
+    return :($(Base.RefValue{F}()))
 end
 
 # Drop the chunk function from its slot after the region, so that it (and the arrays it
@@ -503,8 +533,11 @@ end
 # The buffer for the partial results of a reduction. It is emptied after the region
 # (`empty!` nulls the elements of a buffer of boxed values but keeps the capacity), so
 # resizing it here allocates only when a region needs more chunks than any before.
-@noinline function partials_buffer(pool::Pool, ::Type{T}, n::Int) where {T}
-    buf = get!(() -> Vector{T}(undef, n), pool.buffers, T)::Vector{T}
+@generated function static_buffer(::Type{T}) where {T}
+    return :($(Vector{T}()))
+end
+@inline function partials_buffer(::Type{T}, n::Int) where {T}
+    buf = static_buffer(T)
     length(buf) < n && resize!(buf, n)
     return buf
 end
@@ -518,7 +551,7 @@ end
         spins += 1
         if spins & 1023 == 0
             # Defensive: wake the worker if it went to sleep with a pending command
-            @atomic(ws.sleeping) && notify(@inbounds pool.events[k])
+            @atomic((@inbounds pool.sleepflags[k]).sleeping) && notify(@inbounds pool.events[k])
             # A worker task can only die through an exception thrown into it from outside
             # (e.g. an interrupt); with its command still set, the region would wait forever
             istaskdone(@inbounds pool.tasks[k]) && dead_worker_error(k)
@@ -546,8 +579,8 @@ end
 # Wake the worker of chunk `chunk` if it sleeps with this chunk still pending
 @inline function wake_chunk(pool::Pool, chunk::Int, skip::Int)
     k = worker_for_chunk(chunk, skip)
-    ws = @inbounds pool.workers[k]
-    if (@atomic ws.sleeping) && (@atomic ws.cmd) == chunk
+    if (@atomic (@inbounds pool.sleepflags[k]).sleeping) &&
+            (@atomic (@inbounds pool.workers[k]).cmd) == chunk
         notify(@inbounds pool.events[k])
     end
     return nothing
@@ -568,18 +601,8 @@ end
 
 # Run `f(chunk)` for `chunk in 1:n` in parallel; the caller holds `POOL.busy`.
 function dispatch!(pool::Pool, f::F, n::Int) where {F}
-    slot = job_slot(pool, F)
+    slot = job_slot(F)
     slot[] = f
-    try
-        dispatch!(pool, slot, n)
-    finally
-        clear_slot!(slot)
-    end
-    return nothing
-end
-
-function dispatch!(pool::Pool, slot::Base.RefValue{F}, n::Int) where {F}
-    f = slot[]
     tid = Threads.threadid()
     skip = tid <= length(pool.tid2worker) ? @inbounds(pool.tid2worker[tid]) : 0
     # Published to the workers by the (sequentially consistent) stores of the commands
@@ -645,8 +668,10 @@ function dispatch!(pool::Pool, slot::Base.RefValue{F}, n::Int) where {F}
             err === nothing || throw_worker_error(err::CapturedException)
         end
     finally
-        # Keep neither the scope nor the exceptions of the chunks alive (every used worker
-        # is idle again here, also when a chunk threw)
+        # Keep neither the chunk function (see `clear_slot!`), nor the scope, nor the
+        # exceptions of the chunks alive (every used worker is idle again here, also when
+        # a chunk threw)
+        clear_slot!(slot)
         @atomic :monotonic pool.scope = nothing
         for chunk in 2:n
             @inbounds pool.errs[worker_for_chunk(chunk, skip)] = nothing
@@ -845,7 +870,7 @@ end
         end
         return acc
     end
-    buf = partials_buffer(pool, T, n)
+    buf = partials_buffer(T, n)
     try
         run_on_pool(pool, StoreChunk{F, T}(f, buf), n, sched)
         return fold_partials(op, buf, n)
@@ -885,8 +910,6 @@ function shutdown!()
         for t in pool.tasks
             istaskfailed(t) || wait(t)
         end
-        empty!(pool.slots)
-        empty!(pool.buffers)
         @atomic pool.job = nothing
     finally
         release_pool()
@@ -938,8 +961,8 @@ function parallel_phase(f)
                 end
             end
             if pool !== nothing
-                for (k, ws) in enumerate(pool.workers)
-                    @atomic(ws.sleeping) && notify(pool.events[k])
+                for (k, flag) in enumerate(pool.sleepflags)
+                    @atomic(flag.sleeping) && notify(pool.events[k])
                 end
             end
         end

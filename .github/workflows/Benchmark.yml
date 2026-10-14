@@ -10,7 +10,9 @@ on:
 permissions:
   pull-requests: write
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # One group per pull request: for `pull_request_target`, `github.ref` is the base branch,
+  # which would put all pull requests in one group and cancel each other's runs
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   benchmark:

@@ -18,8 +18,6 @@ pay for creating, scheduling and waking up tasks. Starting a loop costs about 0.
 allocates nothing, against 2–4 µs and about 3 KB for `Threads.@threads` or OhMyThreads'
 default scheduler (see [Overhead](#overhead)).
 
-The team started as the threading backend of a Trixi.jl prototype that removes Polyester.jl.
-
 ## Installation
 
 The package is not registered yet:
@@ -33,14 +31,13 @@ It needs Julia 1.10 or newer and depends on OhMyThreads.jl 0.8.7.
 ## When to use it
 
 - **Use it** for many small to medium parallel loops in a row, where the per-loop overhead
-  of `Threads.@threads` (2–4 µs, or about 100 µs with oversubscription, see below) is a
+  of `Threads.@threads` (2–4 µs) is a
   noticeable part of the run time. A typical case is the right-hand side of a PDE solver,
   which runs 10–20 loops of a few µs each per call.
 - **Use OhMyThreads' own schedulers** (`DynamicScheduler`, the default) for large loops,
   where a few µs per loop do not matter. Use them also when loop bodies are unbalanced
   beyond what `GreedyTeamScheduler` handles, when they yield (I/O, locks, `wait`), when you
-  need composable task-based parallelism or `@barrier`, or when the code must be
-  differentiable with Enzyme (see below). Switching is one keyword argument.
+  need composable task-based parallelism or `@barrier`. Switching is one keyword argument.
 - **Compared to Polyester.jl's `@batch`**: the same design (contiguous chunks, persistent
   spinning workers, nested loops run serially) at a slightly higher cost per loop (about
   0.1 µs). No LLVM-level threading runtime, no conversion of arrays to `PtrArray`s,

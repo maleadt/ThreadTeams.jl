@@ -19,7 +19,7 @@ default scheduler.
 The package is not registered yet:
 
 ```julia
-pkg> add https://github.com/vchuravy/ParkedWorkers.jl
+pkg> add https://github.com/vchuravy/ThreadTeams.jl
 ```
 
 It needs Julia 1.10 or newer and depends on OhMyThreads.jl 0.8.7.
@@ -66,4 +66,4 @@ with a dynamic dispatch, which costs about 0.3 µs and 64 bytes per loop.
 
 The semantics of the team (chunking, stealing, serial fallback, exceptions, dynamic scope,
 reductions), measured overheads and the trade-offs of spinning workers are described in the
-[README](https://github.com/vchuravy/ParkedWorkers.jl#readme).
+[README](https://github.com/vchuravy/ThreadTeams.jl#readme).

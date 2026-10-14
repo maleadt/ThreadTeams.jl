@@ -15,4 +15,4 @@ makedocs(;
     warnonly = [:missing_docs],
 )
 
-deploydocs(; repo = "github.com/vchuravy/ParkedWorkers.jl.git", push_preview = true)
+deploydocs(; repo = "github.com/vchuravy/ThreadTeams.jl.git", push_preview = true)

@@ -682,7 +682,10 @@ end
 # Run `f(chunk)` for `chunk in 1:n` on `Threads.@spawn`ed tasks (chunk 1 on the calling
 # task), for loops started while another task runs a parallel region. Exceptions as for a
 # region: the one of the lowest failing chunk is rethrown after all chunks finished.
-@noinline function run_tasks(f::F, n::Int) where {F}
+# Not specialized on `f`: this path is compiled once (see precompile.jl) instead of once
+# per loop body (about 20 ms each), at the cost of a dynamic call per chunk (well under a
+# microsecond, next to the `@spawn`s).
+@noinline function run_tasks(@nospecialize(f), n::Int)
     tasks = Vector{Task}(undef, n - 1)
     # Loops nested in the chunks run serially, as in a region on the pool
     err1 = OhMyThreads.ScopedValues.with(IN_TASKS_REGION => true) do

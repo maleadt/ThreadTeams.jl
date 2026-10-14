@@ -37,5 +37,6 @@ export TeamScheduler, GreedyTeamScheduler
 include("pool.jl")
 include("chunks.jl")
 include("schedulers.jl")
+include("precompile.jl")
 
 end # module

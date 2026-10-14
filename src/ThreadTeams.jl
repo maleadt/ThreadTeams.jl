@@ -1,0 +1,38 @@
+"""
+    ThreadTeams
+
+A pool of persistent ("parked") worker tasks that runs OhMyThreads.jl's parallel functions
+(`tforeach`, `tmapreduce`, `tmap`, `@tasks`, ...) with low per-loop overhead. The package
+re-exports the OhMyThreads.jl API and adds two schedulers:
+
+- [`TeamScheduler`](@ref) (`scheduler = :team`): one contiguous chunk per thread of the
+  `:default` thread pool, chunk 1 on the calling task, the others on the workers;
+- [`GreedyTeamScheduler`](@ref) (`scheduler = :greedyteam`): more chunks than
+  threads, taken by the caller and the workers as they become free (load balancing).
+
+There is one sticky worker task per thread of the `:default` thread pool. After a loop,
+idle workers spin for a short while (see [`ThreadTeams.set_spin_time!`](@ref)) before
+they go to sleep, so that back-to-back loops do not pay for task creation, scheduling and
+wake-up.
+
+Pool controls: [`ThreadTeams.nworkers`](@ref), [`ThreadTeams.set_spin_time!`](@ref),
+[`ThreadTeams.spin_time`](@ref), [`ThreadTeams.parallel_phase`](@ref),
+[`ThreadTeams.shutdown!`](@ref).
+"""
+module ThreadTeams
+
+using OhMyThreads
+using OhMyThreads: Scheduler
+
+# Re-export the OhMyThreads.jl API
+for name in names(OhMyThreads)
+    name === :OhMyThreads && continue
+    @eval export $name
+end
+export TeamScheduler, GreedyTeamScheduler
+
+include("pool.jl")
+include("chunks.jl")
+include("schedulers.jl")
+
+end # module

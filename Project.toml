@@ -1,16 +1,11 @@
-name = "ParkedWorkers"
+name = "ThreadTeams"
 uuid = "100744f9-5cbb-42a9-938e-f15a20f71997"
 authors = ["Valentin Churavy <v.churavy@gmail.com>"]
 version = "0.1.0"
 
+[deps]
+OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
+
 [compat]
-InteractiveUtils = "1"
-Test = "1"
+OhMyThreads = "0.8.7"
 julia = "1.10"
-
-[extras]
-InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["InteractiveUtils", "Test"]

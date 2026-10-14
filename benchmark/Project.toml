@@ -1,7 +1,17 @@
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
-ParkedWorkers = "100744f9-5cbb-42a9-938e-f15a20f71997"
-Printf = "de0858da-6303-5e67-8744-51eddeda0f76"
+FixedSizeArrays = "3821ddf9-e5b5-40d5-8e25-6813ab96b5e2"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinuxPerf = "b4c46c6c-4fb0-484d-a11a-41bc3392d094"
+OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
+ThreadTeams = "100744f9-5cbb-42a9-938e-f15a20f71997"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 
 [sources]
-ParkedWorkers = {path = ".."}
+ThreadTeams = {path = ".."}
+
+[compat]
+FixedSizeArrays = "1"
+KernelAbstractions = "0.10"
+LinuxPerf = "0.4"
+OhMyThreads = "0.8"

@@ -69,6 +69,7 @@ preduce(max, x)               # parallel reduce
 | `ParkedWorkers.nworkers()` | maximum number of chunks, `Threads.nthreads(:default)` |
 | `ParkedWorkers.nchunks(itr)` | number of chunks a loop over `itr` would use now (`1` = serial) |
 | `ParkedWorkers.set_spin_time!(seconds)` / `spin_time()` | how long idle workers spin before they sleep (default 100 µs) |
+| `ParkedWorkers.parallel_phase(f)` | run `f()` with idle workers spinning until it returns (no sleep between loops) |
 | `ParkedWorkers.shutdown!()` | stop the workers; the next loop starts them again |
 | `ParkedWorkers.neutral(op, x)` | neutral elements for `@pfor` reductions; add methods for custom operators |
 
@@ -87,15 +88,18 @@ with `firstindex`, `lastindex` and `getindex` such as a `Tuple`.
   are safe as long as the body does not yield. Do not assume that chunk `c` always runs on
   the same thread. Prefer buffers indexed by chunk where you can.
 - **Serial fallback.** The loop runs as a plain serial loop when it would get a single chunk:
-  one thread, zero or one element, during precompilation, and when the pool is busy. The pool
-  is busy inside another parallel loop (nested loops) and while another task runs a parallel
-  loop.
-- **Thread safety.** Only one parallel region runs at a time. A loop started from another
-  task while the pool is busy does **not** wait for the pool (no lock, no deadlock). It runs
-  serially on its own task. Concurrent calls are always correct, but only one of them runs in
-  parallel at a time. Loops may be started from any thread, including the interactive thread
-  pool. The worker on the caller's own thread is then left out, since the caller occupies
-  that thread.
+  one thread, zero or one element, during precompilation, and inside another parallel loop
+  (nested loops).
+- **Thread safety.** Only one parallel region runs on the pool at a time. A loop started
+  from another task while the pool is busy does **not** wait for the pool (no lock, no
+  deadlock). It runs its chunks on `Threads.@spawn`ed tasks instead (chunk 1 on the calling
+  task), with the same exception semantics, like `Threads.@threads :dynamic` would. Loops
+  may be started from any thread, including the interactive thread pool. The worker on the
+  caller's own thread is then left out, since the caller occupies that thread.
+- **Dynamic scope and world age.** Chunks run in the dynamic scope of the caller
+  (`ScopedValue`s and the logger set with `with_logger`) and in its world age, as the tasks
+  of `Threads.@spawn` would. `current_task()` and `task_local_storage()` are those of the
+  worker (or of the calling task).
 - **Reductions.** Each chunk starts from the neutral element of `op`, and the chunk results
   are combined with the initial value in chunk order. So `op` must be associative. The result
   is deterministic for a given number of threads, but floating-point results can differ in
@@ -109,10 +113,13 @@ with `firstindex`, `lastindex` and `getindex` such as a `Tuple`.
   stack (`current_exceptions()`, shown as "caused by").
 - **Lazy start, shutdown.** The workers start with the first parallel loop.
   `ParkedWorkers.shutdown!()` stops them, and the next loop starts them again.
+- **Waking up.** Sleeping workers are woken in a binary tree: whoever takes chunk `c` wakes
+  the workers of chunks `2c` and `2c + 1`. The caller wakes at most two workers itself, so
+  waking all workers takes O(log n) steps on its critical path instead of n.
 - **No allocations.** Starting a loop allocates nothing. The chunk closure is stored in a
   typed slot that the pool reuses, and the reduction partials in a reused buffer. Tested
-  with `@allocated` on Julia 1.11 to nightly. On Julia 1.10, `@pfor` and `pforeach` also
-  allocate nothing, but `@pfor reduction = ...` allocates 16 bytes per loop.
+  with `@allocated` on Julia 1.10 to nightly. On Julia 1.10 and 1.11, `@pfor reduction = ...`
+  allocates 16 bytes per loop (also when it runs serially).
 - `break` and `return` in the loop body only end the current chunk. Do not use them.
   `continue` works.
 
@@ -151,14 +158,27 @@ Minima below Polyester's come from samples in which the calling task ran all chu
 ## Trade-offs and caveats
 
 **CPU use while idle.** After each loop, idle workers busy-wait for `spin_time()` (default
-100 µs) before they sleep. They yield to other tasks on their thread now and then, but they
-keep their CPU core busy. With loops back to back, `top` shows all threads at 100%.
+100 µs) before they sleep. A worker goes to sleep right away when another task is ready
+to run on its thread (or in the shared queue of the thread pool), but otherwise it keeps
+its CPU core busy. With loops back to back, `top` shows all threads at 100%. When Julia
+has more threads than the process has CPUs (e.g. `-t N` on N cores with Julia ≥ 1.12,
+which adds an interactive thread), spinning workers also give their core to other OS
+threads every 5 µs (`sched_yield`). They do not do that otherwise, since on an idle machine
+it only adds context switches.
 Other processes on the same cores are slowed down, and they slow down the pool, although
 stealing limits the damage. With one core of eight taken by another busy process, 16-element
 loops cost about 0.9 µs with stealing and 90–600 µs without (`-t 8` on 8 cores). This is the
 same trade-off as Polyester.jl. `ParkedWorkers.set_spin_time!(0)` makes workers
 sleep right away, at the cost of a wake-up (about 10 µs) per loop.
-`ParkedWorkers.shutdown!()` stops them completely. Do not combine the pool with another
+`ParkedWorkers.shutdown!()` stops them completely. To combine a short (or zero) spin time
+with fast loops in one part of a program, wrap that part in
+`ParkedWorkers.parallel_phase() do ... end` (like TBB's `parallel_phase`): idle workers then
+keep spinning until it returns, also across serial parts longer than the spin time.
+
+**Hybrid CPUs.** On CPUs with performance and efficiency cores (recent Intel CPUs, Apple
+silicon), spinning cores take power and turbo headroom from the busy ones. LLVM's and GCC's
+OpenMP runtimes do not spin by default on such CPUs. Consider `set_spin_time!(0)` together
+with `parallel_phase` there. The default spin time is not changed automatically. Do not combine the pool with another
 spinning pool on the same threads, e.g. Polyester-threaded code or multithreaded BLAS
 inside the loop body.
 

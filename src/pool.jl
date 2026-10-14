@@ -10,10 +10,16 @@
 # 1. The chunk function `f::F` is stored in a per-type `Base.RefValue{F}` slot owned by
 #    the pool. Workers receive the slot, which is already heap-allocated, so the hand-off
 #    does not allocate (no boxing of `f`).
-# 2. Workers get chunks `2:n` by storing the chunk index into their command field. The
-#    worker running on the caller's thread (if any) is skipped, because the caller
-#    occupies that thread. Sleeping workers are woken up with their `Event`.
-# 3. The caller runs chunk 1 itself. Then it "steals" every chunk that its worker has not
+# 2. The caller publishes the region (number of chunks, its dynamic scope and world age),
+#    then gives workers chunks `2:n` by storing the chunk index into their command field,
+#    in decreasing chunk order. The worker running on the caller's thread (if any) is
+#    skipped, because the caller occupies that thread.
+# 3. Sleeping workers are woken up (with their `Event`) in a binary tree: whoever claims
+#    chunk `c` first wakes the workers of chunks `2c` and `2c + 1` if they sleep, so the
+#    caller wakes at most two workers itself.
+# 4. Workers run their chunk in the caller's dynamic scope (`ScopedValue`s, the logger)
+#    and world age.
+# 5. The caller runs chunk 1 itself. Then it "steals" every chunk that its worker has not
 #    claimed yet (a compare-and-swap of the command from `chunk` to `0`; the worker claims
 #    it with a swap to `RUNNING`) and runs it itself. This keeps the region from waiting
 #    for a worker that is asleep or whose thread the OS does not schedule (oversubscribed
@@ -21,8 +27,8 @@
 #    threw.
 #
 # Only one parallel region can be active at a time. The `busy` flag is taken with a
-# compare-and-swap; a caller that does not get it (a nested loop, or a loop started
-# concurrently by another task) runs its loop serially instead of waiting.
+# compare-and-swap. A loop nested in a region (started by a chunk) runs serially; a loop
+# started concurrently by another task runs on ordinary tasks (`Threads.@spawn`) instead.
 
 const STOP = -1
 const RUNNING = -2
@@ -36,8 +42,15 @@ end
 WorkerState() = WorkerState(0, false, ntuple(_ -> 0, Val(14)))
 
 mutable struct Pool
-    # `Base.RefValue{F}` holding the chunk function of the current parallel region
+    # The current parallel region, written by the dispatcher before it hands out chunks:
+    # `Base.RefValue{F}` holding the chunk function, the number of chunks, the worker that
+    # is skipped, and the dispatcher's dynamic scope and world age
     @atomic job::Any
+    @atomic nchunks::Int
+    @atomic skip::Int
+    @atomic scope::Any
+    # the world age as a boxed `UInt`, reused while it does not change (see `run_job_in_scope`)
+    @atomic world::Any
     const workers::Vector{WorkerState}
     const events::Vector{Base.Event}
     const tasks::Vector{Task}
@@ -49,6 +62,9 @@ mutable struct Pool
     # result type of a reduction. Only accessed while holding `POOL.busy`.
     const slots::IdDict{Type, Any}
     const buffers::IdDict{Type, Any}
+    # more Julia threads than CPUs available to the process: spinning workers then give
+    # their CPU to other OS threads now and then
+    const oversubscribed::Bool
 end
 
 # Global state. `busy` is held by the task running a parallel region (and by `shutdown!`);
@@ -63,6 +79,8 @@ const POOL = PoolHolder(false, nothing, nothing)
 
 # Spin time of an idle worker before it goes to sleep, in nanoseconds
 const SPIN_NS = Threads.Atomic{Int}(100_000)
+# Number of active `parallel_phase`s; while > 0, idle workers do not go to sleep on time
+const PHASE = Threads.Atomic{Int}(0)
 
 """
     ParkedWorkers.set_spin_time!(seconds::Real)
@@ -74,7 +92,12 @@ waiting.
 Longer spinning makes parallel loops that follow each other with short serial gaps cheaper
 (waking up a sleeping worker costs about 10 µs), but idle workers keep their CPU busy for
 that long after every loop. `0` makes workers go to sleep right away (lowest CPU use,
-highest latency).
+highest latency). To keep the workers spinning only during a part of the program, use
+[`ParkedWorkers.parallel_phase`](@ref).
+
+On CPUs with performance and efficiency cores (recent Intel CPUs, Apple silicon), spinning
+cores take power and turbo headroom from the busy ones. LLVM's and GCC's OpenMP runtimes
+do not spin by default on such CPUs; consider `set_spin_time!(0)` there.
 """
 function set_spin_time!(seconds::Real)
     seconds >= 0 || throw(ArgumentError("spin time must be non-negative"))
@@ -99,20 +122,95 @@ nworkers() = Threads.threadpoolsize(:default)
 
 @inline cpu_pause() = ccall(:jl_cpu_pause, Cvoid, ())
 
+@inline function os_yield()
+    @static if Sys.iswindows()
+        ccall(:SwitchToThread, stdcall, Cint, ())
+    else
+        ccall(:sched_yield, Cint, ())
+    end
+    return nothing
+end
+
+# Does this thread have another task to run? Then an idle worker goes to sleep at once
+# instead of spinning, so that the task gets the thread. (Uses scheduler internals; if they
+# are missing, idle workers only go to sleep after the spin time.)
+@inline function other_work()
+    @static if isdefined(Base, :workqueue_for) && isdefined(Base, :Partr) &&
+               isdefined(Base.Partr, :multiq_check_empty)
+        return !isempty(Base.workqueue_for(Threads.threadid())) ||
+               !Base.Partr.multiq_check_empty()
+    else
+        return false
+    end
+end
+
+# More Julia threads than CPUs this process may run on (affinity mask), e.g. `-t N` on N
+# cores with Julia ≥ 1.12, which adds an interactive thread
+function is_oversubscribed()
+    nt = Threads.threadpoolsize(:default) + Threads.threadpoolsize(:interactive)
+    return nt > Int(ccall(:uv_available_parallelism, Cuint, ()))
+end
+
+# The dynamic scope of the caller, and a macro to run code in it. Julia ≥ 1.11 keeps
+# `ScopedValue`s and the logger in the task's scope; on Julia 1.10, ScopedValues.jl and
+# `with_logger` keep them in the task's `logstate`.
+@static if isdefined(Core, :current_scope)
+    @inline current_scope() = Core.current_scope()
+    macro enter_scope(scope, ex)
+        return Expr(:tryfinally, esc(ex), nothing, esc(scope))
+    end
+else
+    @inline current_scope() = current_task().logstate
+    macro enter_scope(scope, ex)
+        return quote
+            local ct = current_task()
+            local old = ct.logstate
+            ct.logstate = $(esc(scope))
+            try
+                $(esc(ex))
+            finally
+                ct.logstate = old
+            end
+        end
+    end
+end
+
+@static if isdefined(Base, :tls_world_age)
+    @inline world_age() = Base.tls_world_age()
+else
+    @inline world_age() = ccall(:jl_get_tls_world_age, UInt, ())
+end
+
 @inline generating_output() = ccall(:jl_generating_output, Cint, ()) != 0
 
-# Called by the workers through `invokelatest`, so that chunk functions whose types were
-# defined after the workers were started can be called.
+# Called by the workers with `invoke_in_world` in the world age of the dispatcher (as for a
+# task it would have spawned), so that chunk functions whose types were defined after the
+# workers were started can be called.
 function run_job(slot::Base.RefValue{F}, chunk::Int) where {F}
     slot[](chunk)
     return nothing
 end
 
-# Wait until `ws.cmd` is non-zero: spin for `SPIN_NS` nanoseconds, yielding to other tasks
-# on this thread now and then, then sleep on `ev`.
-function wait_for_command(ws::WorkerState, ev::Base.Event)
+# Run chunk `chunk` of the current region in the dispatcher's dynamic scope and world age.
+# The region is read from the pool here: passing the `Any`-typed job and scope as arguments
+# can make the call dynamic, which boxes its arguments. The world age is stored boxed and
+# passed to `Core._call_in_world` (what `invoke_in_world` calls) as is: `invoke_in_world`
+# itself takes an unboxed `UInt` and boxes it again on every call on Julia 1.10 and 1.11.
+function run_job_in_scope(pool::Pool, chunk::Int)
+    slot = @atomic :monotonic pool.job
+    scope = @atomic :monotonic pool.scope
+    world = @atomic :monotonic pool.world
+    @enter_scope scope Core._call_in_world(world, run_job, slot, chunk)
+    return nothing
+end
+
+# Wait until `ws.cmd` is non-zero: spin for `SPIN_NS` nanoseconds (or while a
+# `parallel_phase` is active), then sleep on `ev`. Go to sleep right away when another task
+# could run on this thread.
+function wait_for_command(ws::WorkerState, ev::Base.Event, oversubscribed::Bool)
     spins = 0
     t0 = time_ns()
+    tyield = tevents = t0
     while true
         cmd = @atomic :acquire ws.cmd
         if cmd > 0
@@ -122,8 +220,10 @@ function wait_for_command(ws::WorkerState, ev::Base.Event)
             return cmd
         end
         spins += 1
-        if spins & 255 == 0
-            if time_ns() - t0 > SPIN_NS[]
+        if spins & 63 == 0
+            now = time_ns()
+            spun_out = now - t0 > SPIN_NS[]
+            if (spun_out && PHASE[] == 0) || other_work()
                 @atomic ws.sleeping = true
                 # Re-check after announcing that we sleep: either we see the command
                 # here, or the dispatcher sees `sleeping` and notifies `ev`.
@@ -132,10 +232,23 @@ function wait_for_command(ws::WorkerState, ev::Base.Event)
                 end
                 @atomic ws.sleeping = false
                 spins = 0
-                t0 = time_ns()
+                t0 = tyield = tevents = time_ns()
                 continue
-            elseif spins & 1023 == 0
-                yield()
+            end
+            if spun_out && now - tevents > 20_000
+                # Spinning longer than usual (in a `parallel_phase`): run the libuv event
+                # loop now and then (only does something on the thread that runs it, when
+                # it is free), as the scheduler would do on an idle thread. Otherwise, with
+                # a worker on every thread, timers and I/O would never complete.
+                Base.process_events()
+                tevents = now
+            end
+            if oversubscribed && now - tyield > 5_000
+                # Let the OS run the other threads on this core now and then (only when
+                # there are more threads than CPUs: on an idle machine this would only add
+                # context switches)
+                os_yield()
+                tyield = now
             end
         end
         cpu_pause()
@@ -143,14 +256,23 @@ function wait_for_command(ws::WorkerState, ev::Base.Event)
     end
 end
 
+# The code of a worker task; also used to recognize worker tasks
+struct WorkerCode
+    pool::Any
+    k::Int
+end
+(w::WorkerCode)() = worker_loop(w.pool::Pool, w.k)
+
 function worker_loop(pool::Pool, k::Int)
     ws = pool.workers[k]
     ev = pool.events[k]
     while true
-        cmd = wait_for_command(ws, ev)
+        cmd = wait_for_command(ws, ev, pool.oversubscribed)
         cmd == STOP && break
+        wake_children(pool, cmd, @atomic(:monotonic, pool.nchunks),
+                      @atomic(:monotonic, pool.skip))
         try
-            Base.invokelatest(run_job, @atomic(:acquire, pool.job), cmd)
+            run_job_in_scope(pool, cmd)
         catch err
             pool.errs[k] = CapturedException(err, catch_backtrace())
         end
@@ -167,11 +289,11 @@ function Pool()
     for (k, tid) in enumerate(tids)
         tid2worker[tid] = k
     end
-    pool = Pool(nothing, [WorkerState() for _ in 1:nw],
+    pool = Pool(nothing, 0, 0, nothing, nothing, [WorkerState() for _ in 1:nw],
                 [Base.Event(true) for _ in 1:nw], Task[], Any[nothing for _ in 1:nw],
-                tid2worker, IdDict{Type, Any}(), IdDict{Type, Any}())
+                tid2worker, IdDict{Type, Any}(), IdDict{Type, Any}(), is_oversubscribed())
     for (k, tid) in enumerate(tids)
-        task = Task(() -> worker_loop(pool, k))
+        task = Task(WorkerCode(pool, k))
         task.sticky = true
         ccall(:jl_set_task_tid, Cint, (Any, Cint), task, tid - 1)
         push!(pool.tasks, task)
@@ -193,6 +315,14 @@ end
 # serially. Data is only published with acquire/release in the non-inlined `run_chunks`,
 # `run_fold` and `dispatch!`.
 @inline pool_busy() = @atomic :monotonic POOL.busy
+
+# Is the current task running a chunk of a parallel region (as the dispatcher or as a
+# worker)? Inlined in front of the serial loop as well: plain and relaxed loads only.
+@inline function in_region()
+    ct = current_task()
+    (@atomic :monotonic POOL.owner) === ct && return true
+    return isdefined(ct, :code) && ct.code isa WorkerCode
+end
 
 # Take the pool for a parallel region (starting it if needed); `nothing` if the loop has to
 # run serially. Only called from non-inlined functions.
@@ -256,27 +386,56 @@ end
 # Index of the worker that runs chunk `chunk` (≥ 2) when worker `skip` is not used
 @inline worker_for_chunk(chunk, skip) = (k = chunk - 1; (skip != 0 && k >= skip) ? k + 1 : k)
 
+# Wake the worker of chunk `chunk` if it sleeps with this chunk still pending
+@inline function wake_chunk(pool::Pool, chunk::Int, skip::Int)
+    k = worker_for_chunk(chunk, skip)
+    ws = @inbounds pool.workers[k]
+    if (@atomic ws.sleeping) && (@atomic ws.cmd) == chunk
+        notify(@inbounds pool.events[k])
+    end
+    return nothing
+end
+
+# Called by whoever claims chunk `chunk` of `n`, before running it: wake the workers of
+# chunks `2chunk` and `2chunk + 1` (a binary tree, so that waking `n` sleeping workers
+# takes O(log n) steps). The dispatcher stores the commands in decreasing chunk order, so a
+# child's command is stored before its parent's; with the sequentially consistent claim of
+# the parent and loads here, either the child sees its command before it sleeps, or we see
+# that it sleeps. (`wait_idle` also re-notifies sleeping workers with pending commands.)
+@inline function wake_children(pool::Pool, chunk::Int, n::Int, skip::Int)
+    c = 2chunk
+    c <= n && wake_chunk(pool, c, skip)
+    c + 1 <= n && wake_chunk(pool, c + 1, skip)
+    return nothing
+end
+
 # Run `f(chunk)` for `chunk in 1:n` in parallel; the caller holds `POOL.busy`.
 function dispatch!(pool::Pool, f::F, n::Int) where {F}
     slot = job_slot(pool, F)
     slot[] = f
-    @atomic :release pool.job = slot
     tid = Threads.threadid()
     skip = tid <= length(pool.tid2worker) ? @inbounds(pool.tid2worker[tid]) : 0
-    for chunk in 2:n
+    # Published to the workers by the (sequentially consistent) stores of the commands
+    @atomic :monotonic pool.job = slot
+    @atomic :monotonic pool.nchunks = n
+    @atomic :monotonic pool.skip = skip
+    @atomic :monotonic pool.scope = current_scope()
+    world = world_age()
+    old = @atomic :monotonic pool.world
+    # box the world age only when it changed
+    (old isa UInt && old == world) || (@atomic :monotonic pool.world = world)
+    # Decreasing chunk order: see `wake_children`
+    for chunk in n:-1:2
         k = worker_for_chunk(chunk, skip)
         # A worker can still be busy if a previous region was interrupted
         wait_idle(pool, k)
         @inbounds pool.errs[k] = nothing
-        ws = @inbounds pool.workers[k]
-        # Sequentially consistent store and load (Dekker-style with the worker, which
-        # stores `sleeping` and then loads `cmd`), so that either the worker sees the
-        # command before it sleeps, or we see that it sleeps and wake it up.
-        @atomic ws.cmd = chunk
-        if @atomic ws.sleeping
-            notify(@inbounds pool.events[k])
-        end
+        # Sequentially consistent store (Dekker-style with the worker, which stores
+        # `sleeping` and then loads `cmd`), see `wake_children`
+        @atomic (@inbounds pool.workers[k]).cmd = chunk
     end
+    # Chunk 1 is ours: wake the workers of chunks 2 and 3, they wake the others
+    wake_children(pool, 1, n, skip)
     try
         f(1)
     catch
@@ -293,6 +452,8 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
     for chunk in 2:n
         k = worker_for_chunk(chunk, skip)
         if (@atomicreplace (@inbounds pool.workers[k]).cmd chunk => 0).success
+            # We took over the chunk, and with it the wake-ups of its children
+            wake_children(pool, chunk, n, skip)
             try
                 f(chunk)
             catch err
@@ -308,6 +469,8 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
             throw_worker_error(err::CapturedException)
         end
     end
+    # Do not keep the scope alive
+    @atomic :monotonic pool.scope = nothing
     return nothing
 end
 
@@ -328,14 +491,49 @@ end
     end
 end
 
-# Run `f(chunk)` for `chunk in 1:n`, in parallel if the pool is free, else serially.
-# `n` must not exceed `nworkers()`.
+# `nothing`, or `:serial` / `:tasks` if the loop can not use the pool: serially when
+# nested in a region (or during precompilation), on tasks when another task holds the pool
+@inline function no_pool_mode()
+    (generating_output() || in_region()) && return :serial
+    return :tasks
+end
+
+# Run `f(chunk)` for `chunk in 1:n` on `Threads.@spawn`ed tasks (chunk 1 on the calling
+# task), for loops started while another task runs a parallel region. Exceptions as for a
+# region: the one of the lowest failing chunk is rethrown after all chunks finished.
+@noinline function run_tasks(f::F, n::Int) where {F}
+    tasks = Vector{Task}(undef, n - 1)
+    for chunk in 2:n
+        tasks[chunk - 1] = Threads.@spawn :default f($chunk)
+    end
+    err1 = nothing
+    try
+        f(1)
+    catch err
+        err1 = CapturedException(err, catch_backtrace())
+    end
+    for t in tasks
+        Base._wait(t)
+    end
+    err1 === nothing || throw_worker_error(err1)
+    for t in tasks
+        istaskfailed(t) && throw_worker_error(CapturedException(t.result, t.backtrace))
+    end
+    return nothing
+end
+
+# Run `f(chunk)` for `chunk in 1:n`, in parallel if the pool is free, else serially (nested)
+# or on tasks (another task holds the pool). `n` must not exceed `nworkers()`.
 # Not inlined: the atomics in here must stay out of the caller (see `pool_busy`).
 @noinline function run_chunks(f::F, n::Int) where {F}
     pool = acquire_pool()
     if pool === nothing
-        for chunk in 1:n
-            f(chunk)
+        if no_pool_mode() === :tasks
+            run_tasks(f, n)
+        else
+            for chunk in 1:n
+                f(chunk)
+            end
         end
         return nothing
     end
@@ -360,6 +558,17 @@ end
 @noinline function run_fold(f::F, op::Op, n::Int) where {F, Op}
     pool = acquire_pool()
     if pool === nothing
+        if no_pool_mode() === :tasks
+            T = Base.promote_op(f, Int)
+            T === Union{} && (T = Any)
+            buf = Vector{T}(undef, n)
+            run_tasks(StoreChunk{F, T}(f, buf), n)
+            acc = @inbounds buf[1]
+            for chunk in 2:n
+                acc = op(acc, @inbounds buf[chunk])
+            end
+            return acc
+        end
         acc = f(1)
         for chunk in 2:n
             acc = op(acc, f(chunk))
@@ -420,6 +629,56 @@ function shutdown!()
 end
 
 function in_worker()
-    pool = @atomic POOL.pool
-    return pool !== nothing && any(t -> t === current_task(), pool.tasks)
+    ct = current_task()
+    return isdefined(ct, :code) && ct.code isa WorkerCode
+end
+
+"""
+    ParkedWorkers.parallel_phase(f)
+
+Call `f()` and return its result. While `f` runs, idle workers keep spinning instead of
+going to sleep after [`spin_time()`](@ref ParkedWorkers.spin_time), and sleeping workers
+are woken up at the start. Use it around a part of the program with many parallel loops
+separated by serial work that takes longer than the spin time, so that the loops do not
+pay for waking up the workers (about 10 µs each). Idle workers still go to sleep when
+their thread has another task to run, but otherwise keep their CPU busy until `f`
+returns.
+
+Phases may be nested and may be active in several tasks at once.
+
+```julia
+ParkedWorkers.parallel_phase() do
+    for step in 1:nsteps
+        serial_part!(state)       # e.g. 1 ms
+        @pfor for i in eachindex(u)
+            ...
+        end
+    end
+end
+```
+"""
+function parallel_phase(f)
+    Threads.atomic_add!(PHASE, 1)
+    try
+        if nworkers() > 1 && !generating_output()
+            # Start the workers if needed, and wake up the sleeping ones
+            pool = @atomic :acquire POOL.pool
+            if pool === nothing && (@atomicreplace POOL.busy false => true).success
+                try
+                    pool = @atomic :acquire POOL.pool
+                    pool === nothing && (pool = new_pool())
+                finally
+                    @atomic :release POOL.busy = false
+                end
+            end
+            if pool !== nothing
+                for (k, ws) in enumerate(pool.workers)
+                    @atomic(ws.sleeping) && notify(pool.events[k])
+                end
+            end
+        end
+        return f()
+    finally
+        Threads.atomic_sub!(PHASE, 1)
+    end
 end

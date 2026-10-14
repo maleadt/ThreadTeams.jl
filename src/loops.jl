@@ -9,9 +9,8 @@
 
 Number of chunks a parallel loop over `itr` would be split into right now: at most one per
 thread of the `:default` thread pool and at most one per element. `1` means that the loop
-runs serially, which is the case with a single thread, inside another parallel loop, and
-while another task runs a parallel loop. (During precompilation, loops also run serially,
-but that is decided later.)
+runs serially, which is the case with a single thread and inside another parallel loop.
+(During precompilation, loops also run serially, but that is decided later.)
 """
 @inline nchunks(itr) = nchunks_for_length(plength(itr))
 
@@ -21,7 +20,7 @@ but that is decided later.)
     len <= 1 && return 1
     nw = nworkers()
     nw == 1 && return 1
-    pool_busy() && return 1
+    pool_busy() && in_region() && return 1
     return min(nw, len)
 end
 
@@ -75,7 +74,8 @@ and `getindex` (e.g. a `Tuple`).
 `itr` is split into one contiguous chunk per thread of the `:default` thread pool (see
 [`ParkedWorkers.nchunks`](@ref)); chunk 1 runs on the calling task, the others on the
 worker tasks. The call returns when all chunks are done. If chunks throw, the exception of
-the first failing chunk is rethrown after all chunks have finished.
+the first failing chunk is rethrown after all chunks have finished. Chunks run in the
+dynamic scope (`ScopedValue`s, logger) and world age of the caller.
 
 ```julia
 x = rand(1000)
@@ -180,7 +180,8 @@ Run a `for` loop in parallel on the persistent worker pool. `itr` is split into 
 contiguous chunk per thread of the `:default` thread pool, chunk 1 runs on the calling
 task (see [`pforeach`](@ref) for the supported iteration spaces). When the loop would get a
 single chunk (one thread or element, a nested `@pfor`, another task currently running a
-parallel loop, precompilation), the plain serial loop is run instead.
+parallel loop, precompilation), the plain serial loop is run instead. A loop started
+while another task runs a parallel loop runs on `Threads.@spawn`ed tasks.
 
 `reduction` reduces local variables with the given operators, with the same syntax as
 Polyester.jl's `@batch`: every chunk starts its own copy of `var` from the neutral element of

@@ -43,6 +43,16 @@ function psum(x)
 end
 add_one_f!(x) = pforeach(i -> (@inbounds x[i] += 1.0), eachindex(x))
 
+# World age: chunks run in the world of the caller
+pw_world_g(::Integer) = 1
+function pw_world_h()
+    r = zeros(Int, 64)
+    @pfor for i in eachindex(r)
+        r[i] = pw_world_g(i)
+    end
+    return r
+end
+
 myop(a, b) = a + 2b   # not associative, but used only with neutral 0 for testing syntax
 struct MaxAbs end
 (::MaxAbs)(a, b) = max(abs(a), abs(b))
@@ -325,6 +335,103 @@ ParkedWorkers.neutral(::MaxAbs, x) = zero(x)
         end
     end
 
+    @testset "loops while another task runs one" begin
+        # A loop started while another task holds the pool runs on spawned tasks
+        if NW > 1
+            started = Base.Event()
+            release = Base.Event()
+            holder = Threads.@spawn @pfor for i in 1:NW
+                if i == 1
+                    notify(started)
+                    wait(release)
+                end
+            end
+            wait(started)
+            ct = current_task()
+            tasks = Vector{Task}(undef, NW)
+            @pfor for i in 1:NW
+                tasks[i] = current_task()
+            end
+            @test tasks[1] === ct
+            @test all(t -> t !== ct && !(t.code isa ParkedWorkers.WorkerCode), tasks[2:end])
+            # exceptions: the one of the lowest failing chunk
+            err = try
+                @pfor for i in 1:NW
+                    i >= 2 && error("chunk $i")
+                end
+                nothing
+            catch e
+                e
+            end
+            @test err == ErrorException("chunk 2")
+            @test pmapreduce(identity, +, 1:100) == 5050
+            s = 0
+            @pfor reduction = (+, s) for i in 1:100
+                s += i
+            end
+            @test s == 5050
+            notify(release)
+            wait(holder)
+        end
+    end
+
+    @testset "dynamic scope and world age" begin
+        r = zeros(Int, 64)
+        if isdefined(Base, :ScopedValues)
+            sv = Base.ScopedValues.ScopedValue(0)
+            Base.ScopedValues.with(sv => 42) do
+                @pfor for i in eachindex(r)
+                    r[i] = sv[]
+                end
+            end
+            @test all(==(42), r)
+            pforeach(i -> (r[i] = sv[]), eachindex(r))
+            @test all(==(0), r)
+            @test Base.ScopedValues.with(() -> pmapreduce(_ -> sv[], +, 1:100), sv => 3) == 300
+        end
+        # the logger (in the task's scope on Julia ≥ 1.11, in its `logstate` on 1.10)
+        logger = Base.CoreLogging.NullLogger()
+        ok = zeros(Bool, 64)
+        Base.CoreLogging.with_logger(logger) do
+            @pfor for i in eachindex(ok)
+                ok[i] = Base.CoreLogging.current_logger() === logger
+            end
+        end
+        @test all(ok)
+        @test Base.CoreLogging.current_logger() !== logger
+        # world age
+        @test all(==(1), pw_world_h())
+        w = Base.get_world_counter()
+        @eval pw_world_g(::Int) = 2   # a new, more specific method
+        @test all(==(1), Base.invoke_in_world(w, pw_world_h))
+        @test all(==(2), Base.invokelatest(pw_world_h))
+    end
+
+    @testset "parallel phase" begin
+        x = ParkedWorkers.parallel_phase() do
+            x = zeros(64)
+            for _ in 1:5
+                sleep(0.002)   # longer than the spin time
+                add_one!(x)
+            end
+            if NW > 1
+                # idle workers keep spinning (except the one on our thread, which goes to
+                # sleep when we become runnable again)
+                pool = @atomic ParkedWorkers.POOL.pool
+                skip = get(pool.tid2worker, Threads.threadid(), 0)
+                sleep(0.002)
+                @test all(k -> k == skip || !(@atomic pool.workers[k].sleeping),
+                          eachindex(pool.workers))
+            end
+            ParkedWorkers.parallel_phase(() -> add_one!(x))
+        end
+        @test all(==(6.0), x)
+        @test ParkedWorkers.PHASE[] == 0
+        @test_throws ErrorException ParkedWorkers.parallel_phase(() -> error("in phase"))
+        @test ParkedWorkers.PHASE[] == 0
+        @test ParkedWorkers.is_oversubscribed() isa Bool
+    end
+
     @testset "blocked worker thread" begin
         # A task that does not yield occupies a worker's thread; the caller runs that
         # worker's chunk instead of waiting for the task to finish.
@@ -362,6 +469,14 @@ ParkedWorkers.neutral(::MaxAbs, x) = zero(x)
                 sleep(0.0005)   # workers sleep in between
             end
             @test all(==(200.0), x)
+            # every shape of the wake-up tree
+            for len in 2:(2NW + 1), _ in 1:5
+                y = zeros(len)
+                add_one!(y)
+                @test all(==(1.0), y)
+                @test psum(y) == len
+                sleep(0.0002)
+            end
             @test_throws ArgumentError ParkedWorkers.set_spin_time!(-1)
         finally
             ParkedWorkers.set_spin_time!(old)
@@ -425,19 +540,16 @@ ParkedWorkers.neutral(::MaxAbs, x) = zero(x)
             psum(x)
             add_one_f!(x)
         end
-        a1 = @allocated add_one!(x)
-        a2 = @allocated psum(x)
-        a3 = @allocated add_one_f!(x)
+        # minimum of a few tries: on Julia 1.10, `@allocated` also counts allocations of
+        # other threads
+        a1 = minimum(_ -> (@allocated add_one!(x)), 1:20)
+        a2 = minimum(_ -> (@allocated psum(x)), 1:20)
+        a3 = minimum(_ -> (@allocated add_one_f!(x)), 1:20)
         @info "allocations per loop" add_one! = a1 psum = a2 pforeach = a3
-        if VERSION >= v"1.11"
-            @test a1 == 0
-            @test a2 == 0
-            @test a3 == 0
-        else
-            @test a1 <= 64
-            @test a2 <= 64
-            @test a3 <= 64
-        end
+        @test a1 == 0
+        @test a3 == 0
+        # a reduction allocates 16 bytes on Julia 1.10 and 1.11, also when run serially
+        @test a2 <= (VERSION >= v"1.12" ? 0 : 16)
     end
 
     @testset "stress" begin

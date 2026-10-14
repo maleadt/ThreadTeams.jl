@@ -12,7 +12,8 @@ loops do not pay for task creation, scheduling and wake-up.
 
 Public API: [`@pfor`](@ref), [`pforeach`](@ref), [`pmapreduce`](@ref), [`preduce`](@ref),
 [`ParkedWorkers.nworkers`](@ref), [`ParkedWorkers.set_spin_time!`](@ref),
-[`ParkedWorkers.spin_time`](@ref), [`ParkedWorkers.shutdown!`](@ref),
+[`ParkedWorkers.spin_time`](@ref), [`ParkedWorkers.parallel_phase`](@ref),
+[`ParkedWorkers.shutdown!`](@ref),
 [`ParkedWorkers.neutral`](@ref).
 """
 module ParkedWorkers

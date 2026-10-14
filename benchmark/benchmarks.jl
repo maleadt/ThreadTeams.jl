@@ -7,6 +7,7 @@
 using BenchmarkTools
 using ThreadTeams
 using Enzyme
+using FastBroadcast
 
 const SUITE = BenchmarkGroup()
 
@@ -87,3 +88,26 @@ for n in (1_000, 100_000)
     SUITE["ad"]["forward tforeach team, $n"] = @benchmarkable autodiff(Forward, ad_square_sum_team, Duplicated(x, dx), Const(a)) setup = (x = rand($n); dx = ones($n); a = 1.7) samples = 500 evals = 1 seconds = 5
     SUITE["ad"]["reverse tmapreduce team, $n"] = @benchmarkable Enzyme.gradient(Reverse, ad_sum_of_squares_team, x) setup = (x = rand($n)) samples = 500 evals = 1 seconds = 5
 end
+
+# Downstream: FastBroadcast's `@..` with `thread = true` splits the last axis of the
+# destination into chunks that run on the team (FastBroadcast's ThreadTeams extension),
+# against the serial `@..` and Base's broadcast
+fb_log_thread!(dst, src) = (@.. thread = true dst = log(src); nothing)
+fb_log_serial!(dst, src) = (@.. thread = false dst = log(src); nothing)
+fb_log_base!(dst, src) = (dst .= log.(src); nothing)
+for n in (1_000, 100_000)
+    SUITE["fastbroadcast"]["log thread, $n"] = @benchmarkable fb_log_thread!(dst, src) setup = (src = rand($n); dst = similar(src)) samples = 2_000 evals = 1 seconds = 3
+    SUITE["fastbroadcast"]["log serial, $n"] = @benchmarkable fb_log_serial!(dst, src) setup = (src = rand($n); dst = similar(src)) samples = 2_000 evals = 1 seconds = 3
+    SUITE["fastbroadcast"]["log Base, $n"] = @benchmarkable fb_log_base!(dst, src) setup = (src = rand($n); dst = similar(src)) samples = 2_000 evals = 1 seconds = 3
+end
+# Many arguments over a 3-dimensional array (the example of FastBroadcast's README)
+function fb_axpy9_thread!(a, b, c, d, e, f, g, h, i)
+    @.. thread = true a = b + 0.1 * (0.2c + 0.3d + 0.4e + 0.5f + 0.6g + 0.6h + 0.6i)
+    return
+end
+function fb_axpy9_serial!(a, b, c, d, e, f, g, h, i)
+    @.. thread = false a = b + 0.1 * (0.2c + 0.3d + 0.4e + 0.5f + 0.6g + 0.6h + 0.6i)
+    return
+end
+SUITE["fastbroadcast"]["9 arguments thread, 100x100x8"] = @benchmarkable fb_axpy9_thread!(xs...) setup = (xs = [rand(100, 100, 8) for _ in 1:9]) samples = 2_000 evals = 1 seconds = 3
+SUITE["fastbroadcast"]["9 arguments serial, 100x100x8"] = @benchmarkable fb_axpy9_serial!(xs...) setup = (xs = [rand(100, 100, 8) for _ in 1:9]) samples = 2_000 evals = 1 seconds = 3

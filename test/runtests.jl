@@ -527,6 +527,9 @@ ParkedWorkers.neutral(::MaxAbs, x) = zero(x)
         for (f, T) in ((add_one!, Tuple{Vector{Float64}}), (psum, Tuple{Vector{Float64}}),
                        (add_one_f!, Tuple{Vector{Float64}}))
             ir = sprint(io -> code_llvm(io, f, T; debuginfo = :none))
+            # Code coverage (on in CI) counts lines with relaxed `atomicrmw add` on
+            # Julia 1.13; those are not ours
+            ir = replace(ir, r"[^\n]*= atomicrmw add ptr inttoptr \(i64 \d+ to ptr\), i64 1 monotonic[^\n]*\n" => "")
             @test !occursin(r"load atomic[^\n]*\b(acquire|seq_cst)\b", ir)
             @test !occursin(r"\b(cmpxchg|atomicrmw|fence)\b", ir)
             @test !occursin("jl_generating_output", ir)

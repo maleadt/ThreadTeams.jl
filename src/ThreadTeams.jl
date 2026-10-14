@@ -18,6 +18,9 @@ wake-up.
 Pool controls: [`ThreadTeams.nworkers`](@ref), [`ThreadTeams.set_spin_time!`](@ref),
 [`ThreadTeams.spin_time`](@ref), [`ThreadTeams.parallel_phase`](@ref),
 [`ThreadTeams.shutdown!`](@ref).
+
+With Enzyme.jl loaded, parallel operations on the team can be differentiated in forward
+and reverse mode (a package extension; see the README).
 """
 module ThreadTeams
 

@@ -1,8 +1,10 @@
 [deps]
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
 ParallelTestRunner = "d3525ed8-44d0-4b2c-a655-542cee43accc"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
+Enzyme = "0.13.100"
 OhMyThreads = "0.8.7"
 ParallelTestRunner = "2.9"

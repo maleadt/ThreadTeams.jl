@@ -12,7 +12,7 @@ hands the other chunks to the workers. After a loop, idle workers spin for a sho
 (100 µs by default) before they go to sleep, so loops that follow each other closely do not
 pay for creating, scheduling and waking up tasks. Starting a loop costs about 0.35 µs and
 allocates nothing after the first run of that loop, against 2–4 µs and about 3 KB for
-`Threads.@threads` or OhMyThreads' default scheduler.
+`Threads.@threads` or OhMyThreads' default scheduler (see [Overhead](@ref)).
 
 ## Installation
 
@@ -61,9 +61,13 @@ with a dynamic dispatch, which costs about 0.3 µs and 64 bytes per loop.
 - **Use OhMyThreads' own schedulers** (`DynamicScheduler`, the default) for large loops,
   where a few µs per loop do not matter. Use them also when loop bodies are unbalanced
   beyond what [`GreedyTeamScheduler`](@ref) handles, when they yield (I/O, locks, `wait`),
-  when you need composable task-based parallelism or `@barrier`, or when the code must be
-  differentiable with Enzyme. Switching is one keyword argument.
+  or when you need composable task-based parallelism or `@barrier`. Switching is one
+  keyword argument.
 
-The semantics of the team (chunking, stealing, serial fallback, exceptions, dynamic scope,
-reductions), measured overheads and the trade-offs of spinning workers are described in the
-[README](https://github.com/vchuravy/ThreadTeams.jl#readme).
+With Enzyme.jl loaded, operations on the team can be differentiated in forward and reverse
+mode.
+
+See [Design](@ref) for the semantics of the team (chunking, stealing, serial fallback,
+exceptions, dynamic scope, reductions), [Overhead](@ref) for measurements, and
+[Trade-offs and caveats](@ref) for CPU use while idle, hybrid CPUs, automatic
+differentiation and captured variables.

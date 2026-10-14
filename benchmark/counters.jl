@@ -15,17 +15,22 @@ const TEAM = TeamScheduler()
 
 f_team(x) = tforeach(i -> (@inbounds x[i] += 1.0), eachindex(x); scheduler = TEAM)
 f_team_reduce(x) = tmapreduce(i -> (@inbounds x[i]), +, eachindex(x); scheduler = TEAM)
-f_serial(x) = for i in eachindex(x); @inbounds x[i] += 1.0; end
-HAVE_POLYESTER && @eval f_batch(x) = @batch for i in eachindex(x); @inbounds x[i] += 1.0; end
+f_serial(x) = for i in eachindex(x)
+    @inbounds x[i] += 1.0
+end
+HAVE_POLYESTER && @eval f_batch(x) = @batch for i in eachindex(x)
+    @inbounds x[i] += 1.0
+end
 
 function loops(f, x, n)
     for _ in 1:n
         f(x)
     end
+    return
 end
 
 const EVENTS = "(cpu-cycles, instructions, branch-instructions, branch-misses), " *
-               "(cache-references, cache-misses), (L1-dcache-loads, L1-dcache-load-misses)"
+    "(cache-references, cache-misses), (L1-dcache-loads, L1-dcache-load-misses)"
 
 # Per-event totals over the measured threads, scaled for multiplexing
 function totals(stats)
@@ -46,19 +51,25 @@ function report(name, f, x, n; threads)
     order, acc = totals(stats)
     @printf("%-14s %s ", name, threads ? "all threads:   " : "calling thread:")
     for ev in order
-        short = replace(ev, "hw:" => "", "cache:L1_data:read:" => "L1d_", "cpu-cycles" => "cycles",
-                        "instructions" => "instr", "branch_mispredicts" => "br_miss",
-                        "cache_access" => "LLC_acc", "cache_misses" => "LLC_miss")
+        short = replace(
+            ev, "hw:" => "", "cache:L1_data:read:" => "L1d_", "cpu-cycles" => "cycles",
+            "instructions" => "instr", "branch_mispredicts" => "br_miss",
+            "cache_access" => "LLC_acc", "cache_misses" => "LLC_miss"
+        )
         @printf("%s %7.0f  ", short, acc[ev] / n)
     end
-    println()
+    return println()
 end
 
 x = zeros(N)
-println("Julia ", VERSION, ", threads ", Threads.nthreads(:default), ",",
-        Threads.nthreads(:interactive), ", ", N, " iterations; counts per loop")
-fs = Any[("team", f_team, 200_000), ("team reduce", f_team_reduce, 200_000),
-         ("serial", f_serial, 2_000_000)]
+println(
+    "Julia ", VERSION, ", threads ", Threads.nthreads(:default), ",",
+    Threads.nthreads(:interactive), ", ", N, " iterations; counts per loop"
+)
+fs = Any[
+    ("team", f_team, 200_000), ("team reduce", f_team_reduce, 200_000),
+    ("serial", f_serial, 2_000_000),
+]
 HAVE_POLYESTER && insert!(fs, 3, ("Polyester", f_batch, 200_000))
 for (name, f, n) in fs
     report(name, f, x, n; threads = false)

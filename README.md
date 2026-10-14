@@ -16,7 +16,7 @@ hands the other chunks to the workers. After a loop, idle workers spin for a sho
 (100 µs by default) before they go to sleep, so loops that follow each other closely do not
 pay for creating, scheduling and waking up tasks. Starting a loop costs about 0.35 µs and
 allocates nothing after the first run of that loop, against 2–4 µs and about 3 KB for
-`Threads.@threads` or OhMyThreads' default scheduler (see [Overhead](#overhead)).
+`Threads.@threads` or OhMyThreads' default scheduler (see the [overhead](https://vchuravy.github.io/ThreadTeams.jl/dev/overhead/) page).
 
 ## Installation
 
@@ -87,179 +87,17 @@ schedulers, ...) is OhMyThreads.jl, re-exported. The inputs of the team schedule
 `AbstractArray`s (e.g. `eachindex(x)`, `1:n`, `CartesianIndices`, a `StepRange`, or an array
 to loop over by value) and `chunks`/`index_chunks` objects.
 
-### Semantics
+The [documentation](https://vchuravy.github.io/ThreadTeams.jl/dev) describes the design
+(chunking, stealing, serial fallback, exceptions, dynamic scope, reductions), the measured
+overheads and the trade-offs and caveats (CPU use while idle, hybrid CPUs, automatic
+differentiation, captured variables).
 
-- **Chunking.** With `TeamScheduler`, `itr` is split into `min(nthreads(:default), length(itr))`
-  contiguous chunks of nearly equal length (with ChunkSplitters.jl, as OhMyThreads does).
-  Chunk 1 runs on the calling task, chunk `c` on a worker. `GreedyTeamScheduler` splits
-  into `nchunks` chunks (default `4 * nworkers()`) or chunks of `chunksize` elements; the
-  caller and the workers take them from a shared counter until none are left.
-- **Stealing.** When the calling task has finished chunk 1, it runs every chunk that its
-  worker has not picked up yet (the worker is asleep, or the OS has not scheduled its
-  thread). So a busy core or a sleeping worker does not stall the loop. Chunks that run at
-  the same time always run on different threads, so `threadid()`-indexed scratch buffers
-  are safe as long as the body does not yield. Do not assume that chunk `c` always runs on
-  the same thread. Prefer buffers indexed by the task index (`@task_index`,
-  `OhMyThreads.WithTaskIndex`), which is the chunk index.
-- **Serial fallback.** The loop runs serially when it would get a single chunk: one thread,
-  zero or one element, during precompilation, and inside another parallel loop on the team
-  (nested loops). OhMyThreads' own schedulers nested in a team loop are not affected.
-- **Thread safety.** Only one parallel region runs on the team at a time. A loop started
-  from another task while the team is busy does **not** wait for the team (no lock, no
-  deadlock). It runs its chunks on `Threads.@spawn`ed tasks instead (chunk 1 on the calling
-  task), with the same exception semantics, like `Threads.@threads :dynamic` would. Loops
-  may be started from any thread, including the interactive thread pool. The worker on the
-  caller's own thread is then left out, since the caller occupies that thread.
-- **Dynamic scope and world age.** Chunks run in the dynamic scope of the caller
-  (`ScopedValue`s and the logger set with `with_logger`) and in its world age, as the tasks
-  of `Threads.@spawn` would. `current_task()` and `task_local_storage()` are those of the
-  worker (or of the calling task). Task-local values (`@local`, `TaskLocalValue`) live in
-  the worker tasks, which persist: they are initialized once per worker and reused across
-  loops.
-- **Reductions.** Each chunk is reduced with `mapreduce`, and the chunk results are combined
-  in chunk order, also with the greedy scheduler. So `op` must be associative, but not
-  commutative. The result is deterministic for a given number of chunks, but floating-point
-  results can differ in the last digits from a serial loop. `init`, if given, is used once
-  per chunk, so it must be a neutral element of `op`.
-- **Exceptions.** If chunks throw, the exception that a serial loop would have thrown (that of
-  the first failing chunk) is rethrown after *all* running chunks have finished. The workers
-  stay usable. Chunks that already started run to completion. If chunk 1 throws, chunks that
-  no worker has started yet are skipped. Everything a serial loop would have done before the
-  error is always done. A worker's backtrace is kept on the exception
-  stack (`current_exceptions()`, shown as "caused by").
-- **Lazy start, shutdown.** The workers start with the first parallel loop.
-  `ThreadTeams.shutdown!()` stops them, and the next loop starts them again.
-- **Waking up.** Sleeping workers are woken in a binary tree: whoever takes chunk `c` wakes
-  the workers of chunks `2c` and `2c + 1`. The caller wakes at most two workers itself, so
-  waking all workers takes O(log n) steps on its critical path instead of n.
-- **Allocates once.** The first execution of a parallel region allocates once. Later execution of the same parallel region allocate nothing. The slots keep the last closure
-  of each type (and the arrays it captures) alive until `shutdown!()`.
-- **Barriers.** `@barrier` (`OhMyThreads.Experimental`) needs a fixed number of tasks that
-  run at the same time. The team does not promise that (see "Stealing"), so the team
-  schedulers reject `ntasks`, which `@barrier` requires. Use `DynamicScheduler` for such loops.
+## Development
 
-## Overhead
-
-Per-loop time for a loop with 64 trivial iterations (`x[i] += 1.0`), `benchmark/overhead.jl`,
-pinned to 8 cores (`taskset -c 8-15`) of a Ryzen 9 5950X, Julia 1.12.7 and 1.13.1, `OPENBLAS_NUM_THREADS=1`. Polyester.jl 0.7.18 was
-loaded from a separate environment for comparison (\* on 1.13 from an earlier run, with
-0.7.19); OhMyThreads.jl 0.8.7 and KernelAbstractions.jl 0.10.0 (`foreach_index` on the
-`CPU` backend, followed by `synchronize`) come from the benchmark environment. Values are
-min / median in µs.
-
-**These numbers come from one shared machine, with other jobs running on the same cores.
-Minima are more reliable than medians.**
-
-| mechanism | 1.12 `-t 8` (8+1 interactive) | 1.12 `-t 8,0` | 1.13 `-t 8` | 1.13 `-t 8,0` | allocations per loop |
-|---|---|---|---|---|---|
-| `tforeach`, `scheduler = TeamScheduler()` | 0.33 / 0.38 | 0.36 / 0.45 | 0.35 / 0.42 | 0.37 / 0.43 | 0 |
-| `tmapreduce`, `scheduler = TeamScheduler()` | 0.36 / 0.46 | 0.35 / 0.42 | 0.37 / 0.45 | 0.35 / 0.45 | 0 |
-| `@tasks` with `@set scheduler = TeamScheduler()` | 0.33 / 0.40 | 0.36 / 0.44 | 0.34 / 0.40 | 0.37 / 0.44 | 0 |
-| `tforeach`, `scheduler = GreedyTeamScheduler()` (32 chunks) | 0.95 / 1.48 | 0.88 / 1.47 | 0.74 / 0.93 | 0.74 / 0.94 | 0 |
-| Polyester `@batch` (v0.7.18) | 0.24 / 0.37 | 0.24 / 0.40 | 0.23 / 0.35* | 0.24 / 0.37* | 0 |
-| `Threads.@threads :static` | 10.72 / **113** | 2.13 / 2.60 | 11.21 / **113** | 1.70 / 2.65 | 42 (2.9 KB) |
-| `Threads.@threads :dynamic` | 2.36 / 3.87 | 2.40 / 3.80 | 2.18 / 3.77 | 2.27 / 3.54 | 42 (2.9 KB) |
-| OhMyThreads `tforeach` (v0.8.7, `DynamicScheduler`) | 4.30 / 5.23 | 4.22 / 5.15 | 3.43 / 4.50 | 3.44 / 4.43 | 66–68 (3.6 KB) |
-| OhMyThreads `tforeach`, `scheduler = :static` | 16.88 / **117** | 4.78 / 5.19 | 12.95 / **116** | 4.33 / 4.72 | 67–69 (3.6 KB) |
-| OhMyThreads `tmapreduce(+)` | 3.99 / 4.95 | 4.03 / 4.90 | 3.32 / 4.30 | 3.39 / 4.36 | 64–66 (3.6 KB) |
-| KernelAbstractions `foreach_index` (v0.10.0) | 3.08 / 3.91 | 3.00 / 3.99 | 3.30 / 5.91 | 3.16 / 3.83 | 5 (96 B) |
-| serial loop | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0 |
-
-- Pass the scheduler as an object. A symbol (`scheduler = :team`, `@set scheduler = :team`)
-  is resolved by OhMyThreads with a dynamic dispatch, which costs about 0.3 µs and 64 bytes
-  per loop.
-- `GreedyTeamScheduler()` splits the 64 iterations into 32 chunks (4 per thread) that are
-  handed out one by one, hence the higher cost; with `chunksize` or `nchunks` set to match
-  the loop, it costs about as much as the static schedule.
-- `-t 8` is the default since Julia 1.12: 8 default threads **plus one interactive thread**,
-  so 9 threads share 8 cores. `Threads.@threads :static` then pays about the scheduler's
-  sleep threshold (100 µs) per loop. Its sticky tasks must wait until the OS deschedules a
-  thread that is spinning in the scheduler. `:dynamic` is not affected, and neither are the
-  team and Polyester. The worker tasks already run, and the caller (on the interactive
-  thread) runs chunk 1 while one default thread stays unused.
-- OhMyThreads' `:static` scheduler also uses sticky tasks and has the same problem with `-t 8`.
-- KernelAbstractions 0.10 runs `CPU` kernels through POCL (`CPU()` is a `POCLBackend()`), so
-  `foreach_index` compiles the body as a kernel. A launch costs about as much as a `@threads`
-  loop, but it allocates much less.
-- With `-t 8,0` (no interactive thread) `@threads :static` costs about 2–3 µs.
-- Waking up workers that have gone to sleep costs about 10–15 µs, for the team and for
-  `@threads` alike. Raise the spin time when loops are separated by longer serial phases.
-
-### Where the time goes
-
-Hardware counters per loop on the calling thread (`benchmark/counters.jl`, LinuxPerf.jl,
-same loop and machine as above, Julia 1.12, `-t 8`):
-
-| | cycles | instructions | L1d misses | last-level cache misses |
-|---|---|---|---|---|
-| `tforeach`, `TeamScheduler()` | 1650–2000 | 1700–1750 | 25–32 | 15–17 |
-| `tmapreduce`, `TeamScheduler()` | 1900–2050 | 1800–1840 | 31–35 | 16–18 |
-| Polyester `@batch` | 1560–1760 | 500 | 35–40 | 16–19 |
-| serial loop | 16 | 70 | 0 | 0 |
-
-(Ranges over four runs; the spread comes from other jobs on the machine.)
-
-The cache misses are the hand-off: every worker's command field is a cache line that moves
-between the calling thread's core and the worker's core. A `perf` profile of the calling
-thread puts more than half of its time into that hand-off (storing the commands, checking
-afterwards which chunks the workers have not taken, and waiting for the last worker). The
-two `IdDict` lookups (chunk function slot, partials buffer) cost about 1%; OhMyThreads'
-entry (`tmapreduce` keyword handling, the scheduler object) and `mapreduce` over the first
-chunk account for the remaining instructions, which is where the team executes about three
-times as many instructions as Polyester at a similar cycle count.
-
-Two details keep the hand-off cheap: the command stores are release stores followed by one
-fence rather than sequentially consistent stores (an `xchg` per store would wait for each
-cache line in turn, where plain stores overlap in the store buffer), and the check for
-untaken chunks loads before it compare-and-swaps (a failed compare-and-swap would still take
-the line away from the worker, which then has to take it back). Together they removed about
-a quarter of the calling thread's cycles.
-
-## Trade-offs and caveats
-
-**CPU use while idle.** After each loop, idle workers busy-wait for `spin_time()` (default
-100 µs) before they sleep. The time counts from the end of the loop: a worker that finished
-its chunk early keeps spinning while the loop waits for the other chunks, so that one late
-chunk does not send the other workers to sleep (and make the next loop pay for waking them
-up, which makes it late again). A worker goes to sleep right away when another task is ready
-to run on its thread (or in the shared queue of the thread pool), but otherwise it keeps
-its CPU core busy. With loops back to back, `top` shows all threads at 100%. When Julia
-has more threads than the process has CPUs (e.g. `-t N` on N cores with Julia ≥ 1.12,
-which adds an interactive thread), spinning workers also give their core to other OS
-threads every 5 µs (`sched_yield`). They do not do that otherwise, since on an idle machine
-it only adds context switches.
-Other processes on the same cores are slowed down, and they slow down the team, although
-stealing limits the damage. With one core of eight taken by another busy process, 16-element
-loops cost about 0.9 µs with stealing and 90–600 µs without (`-t 8` on 8 cores). This is the
-same trade-off as Polyester.jl. `ThreadTeams.set_spin_time!(0)` makes workers
-sleep right away, at the cost of a wake-up (about 10 µs) per loop.
-`ThreadTeams.shutdown!()` stops them completely. To combine a short (or zero) spin time
-with fast loops in one part of a program, wrap that part in
-`ThreadTeams.parallel_phase() do ... end` (like TBB's `parallel_phase`): idle workers then
-keep spinning until it returns, also across serial parts longer than the spin time.
-
-**Hybrid CPUs.** On CPUs with performance and efficiency cores (recent Intel CPUs, Apple
-silicon), spinning cores take power and turbo headroom from the busy ones. LLVM's and GCC's
-OpenMP runtimes do not spin by default on such CPUs. Consider `set_spin_time!(0)` together
-with `parallel_phase` there. The default spin time is not changed automatically. Do not combine the team with another
-spinning team on the same threads, e.g. Polyester-threaded code or multithreaded BLAS
-inside the loop body.
-
-**Long-running tasks on worker threads.** Workers are sticky to their threads. If another
-task occupies a worker's thread without yielding, the calling task runs that worker's chunk
-itself (see "Stealing"), and the loop does not wait for the task. A worker that the OS
-deschedules *while* it runs a chunk still delays the loop.
-
-**Captured variables (boxing).** The loop body becomes a closure (as with `Threads.@threads`).
-If the enclosing function assigns a variable more than once (e.g. in both branches of an
-`if`) and the loop body uses it, Julia captures it in a `Core.Box`. The loop is then
-type-unstable and allocates, and assigning the variable in the body is a data race.
-OhMyThreads' check applies to the team schedulers too: such a loop throws a
-`BoxedVariableError` (opt out with `@allow_boxed_captures`). Assign such variables once (a
-single destructuring assignment works) or move the loop into its own function.
-
-
-**Other.** Precompilation always runs loops serially.
+The code is formatted with [Runic.jl](https://github.com/fredrikekre/Runic.jl)
+(`julia -m Runic --inplace src test ext docs/make.jl benchmark`), which CI checks. A
+pre-commit hook that checks the staged files is in `.githooks`; enable it with
+`git config core.hooksPath .githooks`.
 
 ## License
 

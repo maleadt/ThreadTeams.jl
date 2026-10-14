@@ -1,0 +1,14 @@
+#!/bin/sh
+# Check that the staged Julia files are formatted with Runic.jl (https://github.com/fredrikekre/Runic.jl).
+# Enable with `git config core.hooksPath .githooks`; Runic must be installed in the default
+# environment (`julia -e 'using Pkg; Pkg.add("Runic")'`), and `julia -m` needs Julia ≥ 1.12.
+# Only the working-tree contents of the files are checked, not partially staged changes.
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.jl')
+[ -z "$files" ] && exit 0
+if ! julia -m Runic --check --diff $files; then
+    echo "" >&2
+    echo "Runic: the files above are not formatted. Run" >&2
+    echo "    julia -m Runic --inplace $files" >&2
+    echo "and stage the result (or commit with --no-verify)." >&2
+    exit 1
+fi

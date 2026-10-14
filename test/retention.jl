@@ -9,12 +9,41 @@ function loop_over_temporary()
     return w, s, WeakRef(v)
 end
 
+# Also when a chunk throws: the exception and the array it refers to are dropped
+function failing_loop_over_temporary()
+    x = zeros(10^6)
+    w = WeakRef(x)
+    try
+        tforeach(
+            i -> (@inbounds x[i] += 1.0; i == 10^6 && throw(DomainError(x))),
+            eachindex(x); scheduler = team
+        )
+    catch
+    end
+    try
+        tforeach(
+            i -> (@inbounds x[i] += 1.0; i == 10^6 && throw(DomainError(x))),
+            eachindex(x); scheduler = GreedyTeamScheduler(chunksize = 1000)
+        )
+    catch
+    end
+    return w
+end
+
 @testset "no references after a loop" begin
     w, s, wv = loop_over_temporary()
     @test s == 10^6
     GC.gc(); GC.gc()
     @test w.value === nothing
     @test wv.value === nothing
+    w = failing_loop_over_temporary()
+    GC.gc(); GC.gc()
+    @test w.value === nothing
+    if NW > 1
+        pool = @atomic ThreadTeams.POOL.pool
+        @test all(isnothing, pool.errs)
+        @test all(isnothing, pool.greedy_errs)
+    end
     if NW > 1
         pool = @atomic ThreadTeams.POOL.pool
         @test all(isempty, values(pool.buffers))

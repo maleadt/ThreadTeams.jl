@@ -85,8 +85,10 @@ deterministic for a given number of chunks. The task index is the chunk index.
 struct GreedyTeamScheduler <: Scheduler
     nchunks::Int
     chunksize::Int
-    function GreedyTeamScheduler(; nchunks::Integer = 0, chunksize::Integer = 0,
-                                   kwargs...)
+    function GreedyTeamScheduler(;
+            nchunks::Integer = 0, chunksize::Integer = 0,
+            kwargs...
+        )
         isempty(kwargs) || unsupported_kwargs("GreedyTeamScheduler", kwargs)
         (nchunks >= 0 && chunksize >= 0) ||
             throw(ArgumentError("nchunks and chunksize must be non-negative"))
@@ -101,10 +103,14 @@ const TeamSchedulers = Union{TeamScheduler, GreedyTeamScheduler}
 @noinline function unsupported_kwargs(name, kwargs)
     ks = join(("`$k`" for k in keys(kwargs)), ", ")
     if :ntasks in keys(kwargs)
-        throw(ArgumentError("$name does not take `ntasks`: chunks run on a fixed pool " *
-                            "of workers and the calling task runs chunks that no worker " *
-                            "has picked up, so the number of tasks running at the same " *
-                            "time is not fixed (`@barrier` is not supported)"))
+        throw(
+            ArgumentError(
+                "$name does not take `ntasks`: chunks run on a fixed pool " *
+                    "of workers and the calling task runs chunks that no worker " *
+                    "has picked up, so the number of tasks running at the same " *
+                    "time is not fixed (`@barrier` is not supported)"
+            )
+        )
     end
     throw(ArgumentError("$name does not take the keyword argument$(length(kwargs) > 1 ? "s" : "") $ks"))
 end
@@ -193,7 +199,7 @@ do not spin by default on such CPUs; consider `set_spin_time!(0)` there.
 """
 function set_spin_time!(seconds::Real)
     seconds >= 0 || throw(ArgumentError("spin time must be non-negative"))
-    SPIN_NS[] = round(Int, seconds * 1e9)
+    SPIN_NS[] = round(Int, seconds * 1.0e9)
     return seconds
 end
 
@@ -202,7 +208,7 @@ end
 
 Current spin time of idle workers in seconds, see [`set_spin_time!`](@ref).
 """
-spin_time() = SPIN_NS[] / 1e9
+spin_time() = SPIN_NS[] / 1.0e9
 
 """
     ThreadTeams.nworkers() -> Int
@@ -228,9 +234,9 @@ end
 # are missing, idle workers only go to sleep after the spin time.)
 @inline function other_work()
     @static if isdefined(Base, :workqueue_for) && isdefined(Base, :Partr) &&
-               isdefined(Base.Partr, :multiq_check_empty)
+            isdefined(Base.Partr, :multiq_check_empty)
         return !isempty(Base.workqueue_for(Threads.threadid())) ||
-               !Base.Partr.multiq_check_empty()
+            !Base.Partr.multiq_check_empty()
     else
         return false
     end
@@ -355,6 +361,7 @@ function wait_for_command(ws::WorkerState, ev::Base.Event, oversubscribed::Bool)
         cpu_pause()
         GC.safepoint()
     end
+    return
 end
 
 # The code of a worker task; also used to recognize worker tasks
@@ -370,8 +377,10 @@ function worker_loop(pool::Pool, k::Int)
     while true
         cmd = wait_for_command(ws, ev, pool.oversubscribed)
         cmd == STOP && break
-        wake_children(pool, cmd, @atomic(:monotonic, pool.nchunks),
-                      @atomic(:monotonic, pool.skip))
+        wake_children(
+            pool, cmd, @atomic(:monotonic, pool.nchunks),
+            @atomic(:monotonic, pool.skip)
+        )
         try
             run_job_in_scope(pool, cmd)
         catch err
@@ -390,10 +399,12 @@ function Pool()
     for (k, tid) in enumerate(tids)
         tid2worker[tid] = k
     end
-    pool = Pool(nothing, 0, 0, nothing, nothing, [WorkerState() for _ in 1:nw],
-                [Base.Event(true) for _ in 1:nw], Task[], Any[nothing for _ in 1:nw],
-                tid2worker, IdDict{Type, Any}(), IdDict{Type, Any}(), ChunkCounter(),
-                Any[nothing for _ in 1:nw], zeros(Int, nw), is_oversubscribed())
+    pool = Pool(
+        nothing, 0, 0, nothing, nothing, [WorkerState() for _ in 1:nw],
+        [Base.Event(true) for _ in 1:nw], Task[], Any[nothing for _ in 1:nw],
+        tid2worker, IdDict{Type, Any}(), IdDict{Type, Any}(), ChunkCounter(),
+        Any[nothing for _ in 1:nw], zeros(Int, nw), is_oversubscribed()
+    )
     for (k, tid) in enumerate(tids)
         task = Task(WorkerCode(pool, k))
         task.sticky = true
@@ -481,8 +492,10 @@ end
 # barrier. Nothing reads the slot outside a region.
 @inline function clear_slot!(slot::Base.RefValue{F}) where {F}
     GC.@preserve slot begin
-        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t),
-              pointer_from_objref(slot), 0, sizeof(Base.RefValue{F}))
+        ccall(
+            :memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t),
+            pointer_from_objref(slot), 0, sizeof(Base.RefValue{F})
+        )
     end
     return nothing
 end
@@ -506,6 +519,9 @@ end
         if spins & 1023 == 0
             # Defensive: wake the worker if it went to sleep with a pending command
             @atomic(ws.sleeping) && notify(@inbounds pool.events[k])
+            # A worker task can only die through an exception thrown into it from outside
+            # (e.g. an interrupt); with its command still set, the region would wait forever
+            istaskdone(@inbounds pool.tasks[k]) && dead_worker_error(k)
             yield()
         else
             cpu_pause()
@@ -513,6 +529,15 @@ end
         end
     end
     return nothing
+end
+
+@noinline function dead_worker_error(k::Int)
+    throw(
+        ErrorException(
+            "ThreadTeams: worker $k died while running a chunk (its task " *
+                "failed); call ThreadTeams.shutdown!() to start a new team"
+        )
+    )
 end
 
 # Index of the worker that runs chunk `chunk` (≥ 2) when worker `skip` is not used
@@ -566,62 +591,67 @@ function dispatch!(pool::Pool, slot::Base.RefValue{F}, n::Int) where {F}
     old = @atomic :monotonic pool.world
     # box the world age only when it changed
     (old isa UInt && old == world) || (@atomic :monotonic pool.world = world)
-    # Decreasing chunk order: see `wake_children`
-    for chunk in n:-1:2
-        k = worker_for_chunk(chunk, skip)
-        # A worker can still be busy if a previous region was interrupted
-        wait_idle(pool, k)
-        @inbounds pool.errs[k] = nothing
-        # Release stores: their cache-line transfers overlap in the store buffer, where
-        # sequentially consistent stores (`xchg` on x86) would each wait for the line (about
-        # 20% of the dispatcher's time with 8 threads). The fence below orders them before
-        # the loads of `sleeping` in `wake_children` (Dekker-style with the worker, which
-        # stores `sleeping` and then loads `cmd`). Should a wake-up still be missed on a
-        # weakly ordered machine, `wait_idle` re-notifies sleeping workers with pending
-        # commands, so the region only takes longer.
-        @atomic :release (@inbounds pool.workers[k]).cmd = chunk
-    end
-    Threads.atomic_fence()
-    # Chunk 1 is ours: wake the workers of chunks 2 and 3, they wake the others
-    wake_children(pool, 1, n, skip)
     try
-        f(1)
-    catch
-        # Cancel the chunks that were not started and wait for the others: never leave
-        # workers running when returning from the region
+        # Decreasing chunk order: see `wake_children`
+        for chunk in n:-1:2
+            k = worker_for_chunk(chunk, skip)
+            # A worker can still be busy if a previous region was interrupted
+            wait_idle(pool, k)
+            @inbounds pool.errs[k] = nothing
+            # Release stores: their cache-line transfers overlap in the store buffer, where
+            # sequentially consistent stores (`xchg` on x86) would each wait for the line (about
+            # 20% of the dispatcher's time with 8 threads). The fence below orders them before
+            # the loads of `sleeping` in `wake_children` (Dekker-style with the worker, which
+            # stores `sleeping` and then loads `cmd`). Should a wake-up still be missed on a
+            # weakly ordered machine, `wait_idle` re-notifies sleeping workers with pending
+            # commands, so the region only takes longer.
+            @atomic :release (@inbounds pool.workers[k]).cmd = chunk
+        end
+        Threads.atomic_fence()
+        # Chunk 1 is ours: wake the workers of chunks 2 and 3, they wake the others
+        wake_children(pool, 1, n, skip)
+        try
+            f(1)
+        catch
+            # Cancel the chunks that were not started and wait for the others: never leave
+            # workers running when returning from the region
+            for chunk in 2:n
+                k = worker_for_chunk(chunk, skip)
+                @atomicreplace (@inbounds pool.workers[k]).cmd chunk => 0
+            end
+            wait_workers(pool, n, skip)
+            rethrow()
+        end
+        # Run the chunks not claimed by their worker yet. A load first: a compare-and-swap on
+        # a line that the worker has just written takes it from the worker's cache (and the
+        # worker's final store `cmd = 0` takes it back); a load only shares it.
         for chunk in 2:n
             k = worker_for_chunk(chunk, skip)
-            @atomicreplace (@inbounds pool.workers[k]).cmd chunk => 0
-        end
-        wait_workers(pool, n, skip)
-        rethrow()
-    end
-    # Run the chunks not claimed by their worker yet. A load first: a compare-and-swap on
-    # a line that the worker has just written takes it from the worker's cache (and the
-    # worker's final store `cmd = 0` takes it back); a load only shares it.
-    for chunk in 2:n
-        k = worker_for_chunk(chunk, skip)
-        ws = @inbounds pool.workers[k]
-        if (@atomic :acquire ws.cmd) == chunk && (@atomicreplace ws.cmd chunk => 0).success
-            # We took over the chunk, and with it the wake-ups of its children
-            wake_children(pool, chunk, n, skip)
-            try
-                f(chunk)
-            catch err
-                @inbounds pool.errs[k] = CapturedException(err, catch_backtrace())
+            ws = @inbounds pool.workers[k]
+            if (@atomic :acquire ws.cmd) == chunk && (@atomicreplace ws.cmd chunk => 0).success
+                # We took over the chunk, and with it the wake-ups of its children
+                wake_children(pool, chunk, n, skip)
+                try
+                    f(chunk)
+                catch err
+                    @inbounds pool.errs[k] = CapturedException(err, catch_backtrace())
+                end
             end
         end
-    end
-    wait_workers(pool, n, skip)
-    for chunk in 2:n
-        k = worker_for_chunk(chunk, skip)
-        err = @inbounds pool.errs[k]
-        if err !== nothing
-            throw_worker_error(err::CapturedException)
+        wait_workers(pool, n, skip)
+        for chunk in 2:n
+            k = worker_for_chunk(chunk, skip)
+            err = @inbounds pool.errs[k]
+            err === nothing || throw_worker_error(err::CapturedException)
+        end
+    finally
+        # Keep neither the scope nor the exceptions of the chunks alive (every used worker
+        # is idle again here, also when a chunk threw)
+        @atomic :monotonic pool.scope = nothing
+        for chunk in 2:n
+            @inbounds pool.errs[worker_for_chunk(chunk, skip)] = nothing
         end
     end
-    # Do not keep the scope alive
-    @atomic :monotonic pool.scope = nothing
     return nothing
 end
 
@@ -635,7 +665,7 @@ end
 # Rethrow the original exception of a worker chunk. The worker's backtrace is kept on the
 # exception stack (`current_exceptions()`), so it is shown as "caused by: ...".
 @noinline function throw_worker_error(err::CapturedException)
-    try
+    return try
         throw(err)
     catch
         throw(err.ex)
@@ -711,7 +741,7 @@ end
     first = 0
     for k in 1:p
         if @inbounds(errs[k]) !== nothing &&
-           (first == 0 || @inbounds(errchunks[k] < errchunks[first]))
+                (first == 0 || @inbounds(errchunks[k] < errchunks[first]))
             first = k
         end
     end
@@ -729,8 +759,14 @@ function run_on_pool(pool::Pool, f::F, m::Int, ::GreedyTeamScheduler) where {F}
     end
     # Published to the workers by the (sequentially consistent) stores of the commands
     @atomic :monotonic pool.counter.next = 0
-    dispatch!(pool, GreedyJob(f, pool.counter, m, errs, pool.greedy_errchunks), p)
-    throw_greedy_errors(errs, pool.greedy_errchunks, p)
+    try
+        dispatch!(pool, GreedyJob(f, pool.counter, m, errs, pool.greedy_errchunks), p)
+        throw_greedy_errors(errs, pool.greedy_errchunks, p)
+    finally
+        for k in 1:p   # do not keep the exceptions alive
+            @inbounds errs[k] = nothing
+        end
+    end
     return nothing
 end
 
@@ -749,6 +785,9 @@ end
 # or on tasks (another task holds the pool). With the `TeamScheduler`, `n` must not
 # exceed `nworkers()`.
 # Not inlined: the atomics in here must stay out of the caller (see `pool_busy`).
+# `run_chunks` and `run_fold` have Enzyme rules (ext/ThreadTeamsEnzymeExt.jl): Enzyme can
+# not differentiate the team itself (atomics, long-lived tasks), so the rules differentiate
+# the chunk function and run the derivative chunks on the team.
 @noinline function run_chunks(f::F, n::Int, sched::TeamSchedulers) where {F}
     pool = acquire_pool()
     if pool === nothing
@@ -835,11 +874,14 @@ function shutdown!()
         pool === nothing && return nothing
         @atomic POOL.pool = nothing
         for (k, ws) in enumerate(pool.workers)
+            istaskdone(pool.tasks[k]) && continue   # a worker that died (see `wait_idle`)
             wait_idle(pool, k)
             @atomic ws.cmd = STOP
             notify(pool.events[k])
         end
-        foreach(wait, pool.tasks)
+        for t in pool.tasks
+            istaskfailed(t) || wait(t)
+        end
         empty!(pool.slots)
         empty!(pool.buffers)
         @atomic pool.job = nothing

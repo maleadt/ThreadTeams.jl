@@ -10,7 +10,10 @@ makedocs(;
         canonical = "https://vchuravy.github.io/ThreadTeams.jl",
         edit_link = "main",
     ),
-    pages = ["Home" => "index.md", "API" => "api.md"],
+    pages = [
+        "Home" => "index.md", "Design" => "design.md", "Overhead" => "overhead.md",
+        "Trade-offs and caveats" => "caveats.md", "API" => "api.md",
+    ],
     checkdocs = :exports,
     warnonly = [:missing_docs],
 )

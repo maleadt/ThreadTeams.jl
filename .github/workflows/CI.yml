@@ -29,6 +29,13 @@ jobs:
           - '4'
         os:
           - ubuntu-latest
+        include:
+          - version: '1'
+            threads: '4'
+            os: macos-latest
+          - version: '1'
+            threads: '4'
+            os: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
@@ -39,3 +46,14 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
         env:
           JULIA_NUM_THREADS: ${{ matrix.threads }}
+  runic:
+    name: Runic formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: fredrikekre/runic-action@v1
+        with:
+          version: '1'

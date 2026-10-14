@@ -11,8 +11,10 @@
             pool = @atomic ThreadTeams.POOL.pool
             skip = get(pool.tid2worker, Threads.threadid(), 0)
             sleep(0.002)
-            @test all(k -> k == skip || !(@atomic pool.workers[k].sleeping),
-                      eachindex(pool.workers))
+            @test all(
+                k -> k == skip || !(@atomic pool.workers[k].sleeping),
+                eachindex(pool.workers)
+            )
         end
         ThreadTeams.parallel_phase(() -> add_one!(x))
     end

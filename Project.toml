@@ -1,11 +1,20 @@
 name = "ThreadTeams"
 uuid = "100744f9-5cbb-42a9-938e-f15a20f71997"
 authors = ["Valentin Churavy <v.churavy@gmail.com>"]
-version = "0.1.0"
+version = "1.0.0"
 
 [deps]
+ChunkSplitters = "ae650224-84b6-46f8-82ea-d812ca08434e"
 OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
 
+[weakdeps]
+EnzymeCore = "f151be2c-9106-41f4-ab19-57ee4f262869"
+
+[extensions]
+ThreadTeamsEnzymeCoreExt = "EnzymeCore"
+
 [compat]
+ChunkSplitters = "3.1"
+EnzymeCore = "0.8.12"
 OhMyThreads = "0.8.7"
 julia = "1.10"

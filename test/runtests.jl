@@ -5,6 +5,8 @@ using ParallelTestRunner
 
 testsuite = find_tests(@__DIR__)
 delete!(testsuite, "setup")
+# Enzyme does not support Julia nightly
+VERSION >= v"1.14-" && delete!(testsuite, "enzyme")
 
 # ParallelTestRunner starts its workers with a single thread; give them as many as we have
 # (Julia 1.10 does not accept `--threads=N,0`)

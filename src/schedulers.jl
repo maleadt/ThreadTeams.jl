@@ -8,24 +8,27 @@
 # only runs an input of at most one element serially itself.
 
 using OhMyThreads.Implementation: Implementation, promise_task_local,
-                                  check_all_have_same_indices, BoxedVariableError, append!!
-# A dependency of OhMyThreads, not of ours
-const ChunkSplitters = OhMyThreads.ChunkSplitters
+    check_all_have_same_indices, BoxedVariableError, append!!
+using ChunkSplitters: ChunkSplitters, index_chunks
 
 OhMyThreads.Schedulers.from_symbol(::Val{:team}) = TeamScheduler
 OhMyThreads.Schedulers.from_symbol(::Val{:greedyteam}) = GreedyTeamScheduler
 
 function Base.show(io::IO, ::MIME"text/plain", ::TeamScheduler)
-    print(io, "TeamScheduler\n└ Chunking: one chunk per thread")
+    return print(io, "TeamScheduler\n└ Chunking: one chunk per thread")
 end
 function Base.show(io::IO, ::MIME"text/plain", g::GreedyTeamScheduler)
-    print(io, "GreedyTeamScheduler\n└ Chunking: ",
-          g.chunksize > 0 ? "fixed size ($(g.chunksize))" :
-          g.nchunks > 0 ? "fixed count ($(g.nchunks))" : "fixed count (4 per thread)")
+    return print(
+        io, "GreedyTeamScheduler\n└ Chunking: ",
+        g.chunksize > 0 ? "fixed size ($(g.chunksize))" :
+            g.nchunks > 0 ? "fixed count ($(g.nchunks))" : "fixed count (4 per thread)"
+    )
 end
 
-const ChunksInput = Union{ChunkSplitters.Internals.AbstractChunks,
-                          ChunkSplitters.Internals.Enumerate}
+const ChunksInput = Union{
+    ChunkSplitters.Internals.AbstractChunks,
+    ChunkSplitters.Internals.Enumerate,
+}
 
 # OhMyThreads' check for variables captured in a `Core.Box`, but computed from the type of
 # the closure at compile time, so that it costs nothing (OhMyThreads' own
@@ -70,8 +73,10 @@ end
 function (j::MapReduceArrays)(c::Int)
     r = chunk_range(first(j.arrs), c, j.n)
     args = map(B -> view(B, r), j.arrs)
-    return mapreduce(promise_task_local(j.f, c), promise_task_local(j.op), args...;
-                     j.kwargs...)
+    return mapreduce(
+        promise_task_local(j.f, c), promise_task_local(j.op), args...;
+        j.kwargs...
+    )
 end
 
 # Chunk `c` of `n` of `chunks`/`index_chunks` input: every element is one of the user's
@@ -85,15 +90,19 @@ struct MapReduceItems{F, Op, I, K}
 end
 function (j::MapReduceItems)(c::Int)
     r = chunk_range(j.items, c, j.n)
-    return mapreduce(i -> promise_task_local(j.f, i)(j.items[i]),
-                     promise_task_local(j.op), r; j.kwargs...)
+    return mapreduce(
+        i -> promise_task_local(j.f, i)(j.items[i]),
+        promise_task_local(j.op), r; j.kwargs...
+    )
 end
 
 # `f::F` and `op::Op`: without the static parameters, Julia would not specialize on the
 # closures (they are only passed on), and would box them on every call.
-function Implementation._tmapreduce(f::F, op::Op, Arrs, ::Type{OutputType},
-                                    sched::TeamSchedulers,
-                                    mapreduce_kwargs)::OutputType where {F, Op, OutputType}
+function Implementation._tmapreduce(
+        f::F, op::Op, Arrs, ::Type{OutputType},
+        sched::TeamSchedulers,
+        mapreduce_kwargs
+    )::OutputType where {F, Op, OutputType}
     throw_if_boxed_captures(f, op)
     A = first(Arrs)
     if A isa ChunksInput
@@ -104,8 +113,12 @@ function Implementation._tmapreduce(f::F, op::Op, Arrs, ::Type{OutputType},
         check_all_have_same_indices(Arrs)
         job = MapReduceArrays(f, op, Arrs, nchunks(A, sched), mapreduce_kwargs)
     else
-        throw(ArgumentError("$(nameof(typeof(sched))) supports arrays and " *
-                            "`chunks`/`index_chunks` inputs, got $(typeof(A))"))
+        throw(
+            ArgumentError(
+                "$(nameof(typeof(sched))) supports arrays and " *
+                    "`chunks`/`index_chunks` inputs, got $(typeof(A))"
+            )
+        )
     end
     job.n == 1 && return job(1)
     return run_fold(job, promise_task_local(op), job.n, sched)
@@ -137,16 +150,20 @@ function map_chunks(sched::TeamSchedulers, job::J) where {J}
     return run_fold(job, append!!, job.n, sched)
 end
 
-function Implementation._tmap(sched::TeamSchedulers, f::F, A::AbstractArray,
-                              _Arrs::AbstractArray...) where {F}
+function Implementation._tmap(
+        sched::TeamSchedulers, f::F, A::AbstractArray,
+        _Arrs::AbstractArray...
+    ) where {F}
     throw_if_boxed_captures(f)
     Arrs = (A, _Arrs...)
     v = map_chunks(sched, MapArrays(f, Arrs, nchunks(A, sched)))
     return reshape(v, size(A)...)
 end
 
-function Implementation._tmap(sched::TeamSchedulers, f::F, A::ChunksInput,
-                              _Arrs::AbstractArray...) where {F}
+function Implementation._tmap(
+        sched::TeamSchedulers, f::F, A::ChunksInput,
+        _Arrs::AbstractArray...
+    ) where {F}
     isempty(_Arrs) ||
         throw(ArgumentError("chunks input can not be combined with other inputs"))
     throw_if_boxed_captures(f)

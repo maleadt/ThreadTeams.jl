@@ -7,8 +7,10 @@
     end
     @test m == [i + 100j for j in 1:20, i in 1:30]
     @test all(==(1), inner)
-    @test tmapreduce(j -> tmapreduce(i -> i * j, +, 1:10; scheduler = team), +, 1:10;
-                     scheduler = team) == 55 * 55
+    @test tmapreduce(
+        j -> tmapreduce(i -> i * j, +, 1:10; scheduler = team), +, 1:10;
+        scheduler = team
+    ) == 55 * 55
     # OhMyThreads' own schedulers nested in a pool loop are not affected
     @test tmapreduce(j -> tmapreduce(i -> i * j, +, 1:10), +, 1:10; scheduler = team) == 55 * 55
     # and the pool nested in OhMyThreads' schedulers: the first loop to arrive takes the

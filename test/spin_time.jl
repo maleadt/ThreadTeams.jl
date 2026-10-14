@@ -24,7 +24,7 @@ end
 
 @testset "spin time" begin
     old = ThreadTeams.spin_time()
-    @test old == 100e-6
+    @test old == 100.0e-6
     try
         ThreadTeams.set_spin_time!(0)
         @test ThreadTeams.spin_time() == 0

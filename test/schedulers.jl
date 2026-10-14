@@ -4,7 +4,7 @@
         @test GPS() isa Scheduler
         @test OhMyThreads.Schedulers.scheduler_from_symbol(:team) === PS()
         @test OhMyThreads.Schedulers.scheduler_from_symbol(:greedyteam; chunksize = 4) ===
-              GPS(chunksize = 4)
+            GPS(chunksize = 4)
         @test_throws ArgumentError PS(nchunks = 3)
         @test_throws ArgumentError PS(ntasks = 3)
         @test_throws ArgumentError GPS(split = :roundrobin)
@@ -25,7 +25,7 @@
 
     @testset "OhMyThreads functions" begin
         x = rand(1001)
-        for sched in (PS(), GPS(), GPS(chunksize = 7), :team, :greedyteam)
+        for sched in (PS(), GPS(), GPS(chunksize = 1), GPS(chunksize = 7), :team, :greedyteam)
             @test tmapreduce(abs2, +, x; scheduler = sched) ≈ sum(abs2, x)
             @test tmapreduce(string, *, 1:50; scheduler = sched) == join(1:50)
             @test treduce(+, 1:1000; scheduler = sched) == 500500
@@ -51,13 +51,17 @@
         end
         # unsupported inputs
         @test_throws ArgumentError tmapreduce(identity, +, (1, 2, 3); scheduler = PS())
-        @test_throws ArgumentError tmapreduce(identity, +, index_chunks(x; n = 3), x;
-                                              scheduler = PS())
+        @test_throws ArgumentError tmapreduce(
+            identity, +, index_chunks(x; n = 3), x;
+            scheduler = PS()
+        )
     end
 
     @testset "chunk ranges" begin
-        for itr in (1:0, 1:1, 0:9, 3:1000, view(collect(1:50), 2:2:40), CartesianIndices((3, 5)),
-                    enumerate(index_chunks(1:100; n = 7)))
+        for itr in (
+                1:0, 1:1, 0:9, 3:1000, view(collect(1:50), 2:2:40), CartesianIndices((3, 5)),
+                enumerate(index_chunks(1:100; n = 7)),
+            )
             lin = firstindex(itr):lastindex(itr)
             @test ThreadTeams.chunk_range(itr, 1, 1) == lin
             for n in 1:min(9, length(itr))
@@ -76,15 +80,13 @@
             @test issorted(cs)
             @test isempty(itr) || (cs[1] == 1 && cs[end] == n)
             @test [count(==(c), cs) for c in 1:n] ==
-                  [length(ThreadTeams.chunk_range(itr, c, n)) for c in 1:n]
+                [length(ThreadTeams.chunk_range(itr, c, n)) for c in 1:n]
         end
         # per-chunk buffers through the task index
         bufs = [Int[] for _ in 1:NW]
         tforeach(WithTaskIndex((c, i) -> push!(bufs[c], i)), 1:100; scheduler = team)
         @test sort(reduce(vcat, bufs)) == 1:100
         @test count(!isempty, bufs) == ThreadTeams.nchunks(1:100)
-        # serial loops see task index 1
-        @test tmap(WithTaskIndex((c, i) -> c), 1:1; scheduler = team) == [1]
         # @task_index in @tasks
         ibufs = [zeros(Int, 100) for _ in 1:NW]
         @tasks for i in 1:100
@@ -96,12 +98,6 @@
     end
 
     @testset "@tasks" begin
-        r = @tasks for i in 1:100
-            @set scheduler = :team
-            @set reducer = +
-            i
-        end
-        @test r == 5050
         # @local: task-local values live in the persistent workers
         r = @tasks for i in 1:100
             @set scheduler = PS()

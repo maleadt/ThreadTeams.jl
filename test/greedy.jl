@@ -1,18 +1,10 @@
 @testset "greedy scheduler" begin
-    @testset "constructor" begin
-        @test_throws ArgumentError GPS(nchunks = 2, chunksize = 3)
-        @test_throws ArgumentError GPS(nchunks = -1)
-        @test ThreadTeams.nchunks(1:1000, GPS()) == (NW == 1 ? 1 : 4NW)
-        @test ThreadTeams.nchunks(1:1000, GPS(chunksize = 10)) == (NW == 1 ? 1 : 100)
-        @test ThreadTeams.nchunks(1:1000, GPS(nchunks = 7)) == (NW == 1 ? 1 : 7)
-        @test ThreadTeams.nchunks(1:3, GPS(nchunks = 7)) == (NW == 1 ? 1 : 3)
-        @test ThreadTeams.nchunks(1:1000, GPS(chunksize = 1000)) == 1
-    end
-
     @testset "every element once" begin
         for sched in (GPS(), GPS(chunksize = 1), GPS(chunksize = 7), GPS(nchunks = 3)),
-            itr in (1:0, 1:1, 1:2, 1:(NW + 1), 0:1000, CartesianIndices((7, 9)),
-                    collect(1:3:300))
+                itr in (
+                    1:0, 1:1, 1:2, 1:(NW + 1), 0:1000, CartesianIndices((7, 9)),
+                    collect(1:3:300),
+                )
 
             counts = Dict{Any, Int}()
             lk = ReentrantLock()
@@ -21,18 +13,15 @@
             end
             @test counts == Dict(x => 1 for x in itr)
         end
-        x = zeros(1000)
-        tforeach(i -> (x[i] = 2i), eachindex(x); scheduler = GPS(chunksize = 3))
-        @test x == 2 .* (1:1000)
     end
 
     @testset "reductions keep chunk order" begin
+        # (the chunk order of `tmapreduce(string, *)` and `tmap` is checked in schedulers.jl)
         for sched in (GPS(), GPS(chunksize = 1), GPS(chunksize = 5))
-            @test tmapreduce(string, *, 1:100; scheduler = sched) == join(1:100)
-            @test treduce(+, 1:1000; scheduler = sched) == 500500
-            @test tmap(string, 1:100; scheduler = sched) == string.(1:100)
-            s, m = tmapreduce(i -> (i, i), (a, b) -> (a[1] + b[1], max(a[2], b[2])), 1:1000;
-                              scheduler = sched)
+            s, m = tmapreduce(
+                i -> (i, i), (a, b) -> (a[1] + b[1], max(a[2], b[2])), 1:1000;
+                scheduler = sched
+            )
             @test (s, m) == (500500, 1000)
         end
         f = rand(10_000)

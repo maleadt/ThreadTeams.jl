@@ -21,8 +21,10 @@ How a parallel operation runs on the team, and what that means for the code insi
   from another task while the team is busy does **not** wait for the team (no lock, no
   deadlock). It runs its chunks on `Threads.@spawn`ed tasks instead (chunk 1 on the calling
   task), with the same exception semantics, like `Threads.@threads :dynamic` would. Loops
-  may be started from any thread, including the interactive thread pool. The worker on the
-  caller's own thread is then left out, since the caller occupies that thread.
+  nested in those chunks run serially while the team is busy; once the other task has
+  released it, the first nested loop to arrive takes the team. Loops may be started from
+  any thread, including the interactive thread pool. The worker on the caller's own thread
+  is then left out, since the caller occupies that thread.
 - **Dynamic scope and world age.** Chunks run in the dynamic scope of the caller
   (`ScopedValue`s and the logger set with `with_logger`) and in its world age, as the tasks
   of `Threads.@spawn` would. `current_task()` and `task_local_storage()` are those of the
@@ -45,8 +47,11 @@ How a parallel operation runs on the team, and what that means for the code insi
 - **Waking up.** Sleeping workers are woken in a binary tree: whoever takes chunk `c` wakes
   the workers of chunks `2c` and `2c + 1`. The caller wakes at most two workers itself, so
   waking all workers takes O(log n) steps on its critical path instead of n.
-- **Allocates once.** The first execution of a parallel region allocates once. Later execution of the same parallel region allocate nothing. The slots keep the last closure
-  of each type (and the arrays it captures) alive until `shutdown!()`.
+- **Allocates once.** The first run of a parallel loop allocates once (the slot that hands
+  the loop body to the workers, and the buffer for the partial results of a reduction).
+  Later runs of the same loop allocate nothing. After a loop, the team holds no reference to
+  the loop body, the arrays it captured, the partial results or the exceptions of the
+  chunks.
 - **Barriers.** `@barrier` (`OhMyThreads.Experimental`) needs a fixed number of tasks that
   run at the same time. The team does not promise that (see "Stealing"), so the team
   schedulers reject `ntasks`, which `@barrier` requires. Use `DynamicScheduler` for such loops.

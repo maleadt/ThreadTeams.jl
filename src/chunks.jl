@@ -36,10 +36,10 @@ end
 end
 
 # The linear indices of chunk `c` of `n` contiguous chunks of `A`, split with
-# ChunkSplitters.jl as OhMyThreads' schedulers do (`index_chunks` is imported in schedulers.jl).
-#The index range is chunked (rather than
-# `A` itself) so that this also works for `A`s that ChunkSplitters does not chunk, e.g.
-# `enumerate(chunks(...))`. `n == 1` is the whole collection (also when it is empty).
+# ChunkSplitters.jl as OhMyThreads' schedulers do (`index_chunks` is imported in
+# schedulers.jl). The index range is chunked (rather than `A` itself) so that this also
+# works for `A`s that ChunkSplitters does not chunk, e.g. `enumerate(chunks(...))`.
+# `n == 1` is the whole collection (also when it is empty).
 @inline function chunk_range(A, c::Int, n::Int)
     r = firstindex(A):lastindex(A)
     n == 1 && return r

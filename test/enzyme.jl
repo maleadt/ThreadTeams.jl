@@ -1,4 +1,4 @@
-# Differentiating parallel operations on the team with Enzyme (ext/ThreadTeamsEnzymeExt.jl)
+# Differentiating parallel operations on the team with Enzyme (ext/ThreadTeamsEnzymeCoreExt.jl)
 using Enzyme
 
 function ad_square_sum(x, a)

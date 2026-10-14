@@ -12,8 +12,8 @@
 #    does not allocate (no boxing of `f`).
 # 2. The caller publishes the region (number of chunks, its dynamic scope and world age),
 #    then gives workers chunks `2:n` by storing the chunk index into their command field
-#    (release stores, then one fence), in decreasing chunk order. The worker running on the caller's thread (if any) is
-#    skipped, because the caller occupies that thread.
+#    (release stores, then one fence), in decreasing chunk order. The worker running on
+#    the caller's thread (if any) is skipped, because the caller occupies that thread.
 # 3. Sleeping workers are woken up (with their `Event`) in a binary tree: whoever claims
 #    chunk `c` first wakes the workers of chunks `2c` and `2c + 1` if they sleep, so the
 #    caller wakes at most two workers itself.
@@ -254,9 +254,6 @@ function is_oversubscribed()
     return nt > Int(ccall(:uv_available_parallelism, Cuint, ()))
 end
 
-# The dynamic scope of the caller, and a macro to run code in it. Julia ≥ 1.11 keeps
-# `ScopedValue`s and the logger in the task's scope; on Julia 1.10, ScopedValues.jl and
-# `with_logger` keep them in the task's `logstate`.
 # The dynamic scope of the caller, and a macro to run code in it. Julia ≥ 1.11 keeps
 # `ScopedValue`s and the logger in the task's scope; on Julia 1.10, ScopedValues.jl and
 # `with_logger` keep them in the task's `logstate`. (The scope of a started task can not be
@@ -733,7 +730,8 @@ end
 # microsecond, next to the `@spawn`s).
 @noinline function run_tasks(@nospecialize(f), n::Int)
     tasks = Vector{Task}(undef, n - 1)
-    # Loops nested in the chunks run serially, as in a region on the pool
+    # Loops nested in the chunks run serially while the pool is busy (once the other task
+    # has released it, the first nested loop to arrive takes the pool)
     err1 = OhMyThreads.ScopedValues.with(IN_TASKS_REGION => true) do
         for chunk in 2:n
             tasks[chunk - 1] = Threads.@spawn :default f($chunk)

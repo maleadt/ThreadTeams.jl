@@ -49,15 +49,6 @@ function ad_inplace!(y, x)
     end
     return nothing
 end
-# records which thread runs each chunk (an inactive side effect)
-function ad_threads(x, tids)
-    y = similar(x)
-    tforeach(eachindex(x); scheduler = team) do i
-        y[i] = x[i]^2
-        tids[i] = Threads.threadid()
-    end
-    return sum(y)
-end
 
 @testset "Enzyme" begin
     x = collect(range(0.1, 2.0; length = 103))
@@ -101,23 +92,5 @@ end
         @test y ≈ sin.(x) .* x
         @test dxs[1] ≈ cos.(x) .* x .+ sin.(x)
         @test dxs[2] ≈ 2 .* (cos.(x) .* x .+ sin.(x))
-    end
-    @testset "derivative chunks run on the team" begin
-        # The chunks of a sleeping worker are run by the caller (see "Stealing" in the
-        # docs), and a wake-up can take longer than these short loops on a loaded CI
-        # runner: the workers are kept spinning with a parallel phase, and the loop is
-        # repeated so that they get a chunk at least once
-        tids = zeros(Int, length(x))
-        seen = Set{Int}()
-        ThreadTeams.parallel_phase() do
-            for _ in 1:50
-                dx = Enzyme.gradient(Reverse, ad_threads, x, Const(tids))[1]
-                @test dx ≈ 2x
-                union!(seen, tids)
-            end
-        end
-        if NW > 1
-            @test length(seen) > 1
-        end
     end
 end

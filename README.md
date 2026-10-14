@@ -40,8 +40,8 @@ Enzyme rules load with EnzymeCore.jl.
   beyond what `GreedyTeamScheduler` handles, when they yield (I/O, locks, `wait`), when you
   need composable task-based parallelism or `@barrier`. Switching is one keyword argument.
 - **Compared to Polyester.jl's `@batch`**: the same design (contiguous chunks, persistent
-  spinning workers, nested loops run serially) at a slightly higher cost per loop (about
-  0.1 µs). No LLVM-level threading runtime, no conversion of arrays to `PtrArray`s,
+  spinning workers, nested loops run serially) at a slightly higher cost per loop (a few
+  tens of nanoseconds). No LLVM-level threading runtime, no conversion of arrays to `PtrArray`s,
   exceptions are propagated, and the loop body is an ordinary closure.
 
 ## Usage

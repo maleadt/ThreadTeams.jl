@@ -1,7 +1,7 @@
 # ThreadTeams.jl
 
 [![CI](https://github.com/vchuravy/ThreadTeams.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/vchuravy/ThreadTeams.jl/actions/workflows/CI.yml)
-[![docs dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://vchuravy.github.io/ParkedWorkers.jl/dev)
+[![docs dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://vchuravy.github.io/ThreadTeams.jl/dev)
 
 A team of persistent worker tasks, one per thread, that runs
 [OhMyThreads.jl](https://github.com/JuliaFolds2/OhMyThreads.jl)'s parallel functions with

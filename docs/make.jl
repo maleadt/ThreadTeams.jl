@@ -7,7 +7,7 @@ makedocs(;
     authors = "Valentin Churavy",
     format = Documenter.HTML(;
         prettyurls = get(ENV, "CI", "false") == "true",
-        canonical = "https://vchuravy.github.io/ParkedWorkers.jl",
+        canonical = "https://vchuravy.github.io/ThreadTeams.jl",
         edit_link = "main",
     ),
     pages = ["Home" => "index.md", "API" => "api.md"],

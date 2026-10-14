@@ -1,6 +1,7 @@
 # ThreadTeams.jl
 
-[![CI](https://github.com/vchuravy/ParkedWorkers.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/vchuravy/ParkedWorkers.jl/actions/workflows/CI.yml)
+[![CI](https://github.com/vchuravy/ThreadTeams.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/vchuravy/ThreadTeams.jl/actions/workflows/CI.yml)
+[![docs dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://vchuravy.github.io/ParkedWorkers.jl/dev)
 
 A team of persistent worker tasks, one per thread, that runs
 [OhMyThreads.jl](https://github.com/JuliaFolds2/OhMyThreads.jl)'s parallel functions with
@@ -24,7 +25,7 @@ The team started as the threading backend of a Trixi.jl prototype that removes P
 The package is not registered yet:
 
 ```julia
-pkg> add https://github.com/vchuravy/ParkedWorkers.jl
+pkg> add https://github.com/vchuravy/ThreadTeams.jl
 ```
 
 It needs Julia 1.10 or newer and depends on OhMyThreads.jl 0.8.7.

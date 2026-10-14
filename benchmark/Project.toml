@@ -1,11 +1,14 @@
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+FastBroadcast = "7034ab61-46d4-4ed7-9d0f-46aef9175898"
 ThreadTeams = "100744f9-5cbb-42a9-938e-f15a20f71997"
 
 [sources]
+FastBroadcast = {url = "https://github.com/vchuravy/FastBroadcast.jl", rev = "vc/threadteams"}
 ThreadTeams = {path = ".."}
 
 [compat]
 BenchmarkTools = "1"
 Enzyme = "0.13.216"
+FastBroadcast = "1.4"

@@ -2,9 +2,10 @@
 #
 # Enzyme can not differentiate the team itself (atomics, long-lived tasks), so
 # `run_chunks(f, n, sched)` and `run_fold(f, op, n, sched)` (`tforeach`, `tmapreduce`,
-# `tmap`, `@tasks`, ... with a team scheduler) have rules that differentiate the chunk
-# function `f(c)` and run the derivative chunks on the team as well, with the same
-# scheduler:
+# `treduce`, `tmap!`, `@tasks` with a team scheduler) have rules that differentiate the
+# chunk function `f(c)` and run the derivative chunks on the team as well, with the same
+# scheduler. `tmap` and `tcollect` are not supported: their chunk results are vectors, and
+# the reduction rule needs a number (or tuple of numbers) as the result; they throw.
 #
 # - forward mode: chunk `c` runs `autodiff(Forward, ...)` of `f(c)`;
 # - reverse mode: the augmented primal runs the augmented forward pass of every chunk in

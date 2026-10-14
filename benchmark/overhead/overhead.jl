@@ -3,12 +3,14 @@
 # KernelAbstractions.jl's `foreach_index` on the `CPU` backend (and Polyester.jl's `@batch`
 # if it is installed), over a `Vector` and over a `FixedSizeVector`.
 #
-#     julia --project=benchmark -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'
-#     taskset -c 8-15 julia -t 8   --project=benchmark benchmark/overhead.jl
-#     taskset -c 8-15 julia -t 8,0 --project=benchmark benchmark/overhead.jl
+#     julia --project=benchmark/overhead -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'
+#     taskset -c 8-15 julia -t 8   --project=benchmark/overhead benchmark/overhead/overhead.jl
+#     taskset -c 8-15 julia -t 8,0 --project=benchmark/overhead benchmark/overhead/overhead.jl
 #
-# Each Julia version keeps its own manifest, `benchmark/Manifest-vX.Y.toml`: Pkg writes to that
-# file only if it exists, so `touch` it before the first `resolve` with a new version.
+# Each Julia version keeps its own manifest, `benchmark/overhead/Manifest-vX.Y.toml`: Pkg
+# writes to that file only if it exists, so `touch` it before the first `resolve` with a new
+# version. (`benchmark/benchmarks.jl` is the AirspeedVelocity suite for comparing revisions,
+# in its own environment.)
 #
 # Polyester is not a dependency; to include it, run in an environment that has it.
 using ThreadTeams

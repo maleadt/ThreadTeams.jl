@@ -44,7 +44,9 @@ uses for `Threads.@threads`. With more than one thread, Enzyme updates shadow me
 atomically, so chunks may read the same data (stencils). Captured scalars (e.g. a
 coefficient) get their derivatives too. Reductions (`tmapreduce`, `treduce`, `@tasks` with
 `@set reducer`) are supported with a constant operator and a number or tuple of numbers as
-the result, but not in batched mode. Other AD tools that work on the code of the loop
+the result, but not in batched mode. `tmap` and `tcollect` are not supported (their chunk
+results are vectors) and throw; write the result into a preallocated array with `tmap!` or
+`tforeach` instead. Other AD tools that work on the code of the loop
 cannot differentiate through the team; use a serial version or `Threads.@threads` there.
 
 **Captured variables (boxing).** The loop body becomes a closure (as with `Threads.@threads`).

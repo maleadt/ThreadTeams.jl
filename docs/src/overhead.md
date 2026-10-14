@@ -1,6 +1,6 @@
 # Overhead
 
-Per-loop time for a loop with 64 trivial iterations (`x[i] += 1.0`), `benchmark/overhead.jl`,
+Per-loop time for a loop with 64 trivial iterations (`x[i] += 1.0`), `benchmark/overhead/overhead.jl`,
 pinned to 8 cores (`taskset -c 8-15`) of a Ryzen 9 5950X, Julia 1.12.7 and 1.13.1, `OPENBLAS_NUM_THREADS=1`. Polyester.jl 0.7.18 was
 loaded from a separate environment for comparison (\* on 1.13 from an earlier run, with
 0.7.19); OhMyThreads.jl 0.8.7 and KernelAbstractions.jl 0.10.0 (`foreach_index` on the
@@ -47,7 +47,7 @@ Minima are more reliable than medians.**
 
 ## Where the time goes
 
-Hardware counters per loop on the calling thread (`benchmark/counters.jl`, LinuxPerf.jl,
+Hardware counters per loop on the calling thread (`benchmark/overhead/counters.jl`, LinuxPerf.jl,
 same loop and machine as above, Julia 1.12, `-t 8`):
 
 | | cycles | instructions | L1d misses | last-level cache misses |

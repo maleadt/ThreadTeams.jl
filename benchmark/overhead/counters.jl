@@ -2,7 +2,7 @@
 # with 64 trivial iterations: the team vs Polyester.jl's `@batch` (if installed) vs a serial
 # loop. Linux only (LinuxPerf.jl); `perf_event_paranoid` must allow user-space counting.
 #
-#     taskset -c 8-15 julia -t 8 --project=benchmark benchmark/counters.jl
+#     taskset -c 8-15 julia -t 8 --project=benchmark/overhead benchmark/overhead/counters.jl
 using ThreadTeams
 using LinuxPerf
 using Printf

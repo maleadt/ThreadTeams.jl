@@ -785,7 +785,7 @@ end
 # or on tasks (another task holds the pool). With the `TeamScheduler`, `n` must not
 # exceed `nworkers()`.
 # Not inlined: the atomics in here must stay out of the caller (see `pool_busy`).
-# `run_chunks` and `run_fold` have Enzyme rules (ext/ThreadTeamsEnzymeExt.jl): Enzyme can
+# `run_chunks` and `run_fold` have Enzyme rules (ext/ThreadTeamsEnzymeCoreExt.jl): Enzyme can
 # not differentiate the team itself (atomics, long-lived tasks), so the rules differentiate
 # the chunk function and run the derivative chunks on the team.
 @noinline function run_chunks(f::F, n::Int, sched::TeamSchedulers) where {F}

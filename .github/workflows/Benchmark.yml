@@ -1,0 +1,24 @@
+name: Benchmark
+# Runs benchmark/benchmarks.jl for the pull request and for its base with
+# AirspeedVelocity.jl, and posts the comparison as a comment on the pull request. The
+# numbers from GitHub's runners are noisy and far from the ones in the documentation
+# (few, shared cores); only the ratio between the two revisions means something.
+on:
+  pull_request_target:
+    branches:
+      - main
+permissions:
+  pull-requests: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: MilesCranmer/AirspeedVelocity.jl@action-v1
+        with:
+          julia-version: '1'
+          exeflags: '--threads=4'
+          mode: 'time'

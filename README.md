@@ -134,16 +134,13 @@ Minima are more reliable than medians.**
 
 | mechanism | 1.12 `-t 8` (8+1 interactive) | 1.12 `-t 8,0` | 1.13 `-t 8` | 1.13 `-t 8,0` | allocations per loop |
 |---|---|---|---|---|---|
-| `@pfor` | 0.17 / 0.54 | 0.28 / 0.49 | 0.27 / 0.49 | 0.18 / 0.50 | 0 |
-| `pforeach` | 0.15 / 0.54 | 0.16 / 0.50 | 0.26 / 0.51 | 0.16 / 0.55 | 0 |
-| `@pfor reduction = (+, s)` | 0.21 / 0.57 | 0.21 / 0.54 | 0.22 / 0.50 | 0.21 / 0.57 | 0 |
-| Polyester `@batch` (v0.7.19) | 0.26 / 0.37 | 0.27 / 0.42 | 0.23 / 0.36 | 0.25 / 0.38 | 0 |
-| `Threads.@threads :static` | 11.2 / **113** | 1.74 / 2.60 | 11.5 / **114** | 1.73 / 2.77 | 42 (2.9 KB) |
-| `Threads.@threads :dynamic` | 2.59 / 3.90 | 2.36 / 3.83 | 2.35 / 3.66 | 2.33 / 3.75 | 42 (2.9 KB) |
+| `@pfor` | 0.34 / 0.50 | 0.38 / 0.54 | 0.34 / 0.51 | 0.40 / 0.51 | 0 |
+| `pforeach` | 0.33 / 0.51 | 0.37 / 0.54 | 0.33 / 0.51 | 0.39 / 0.53 | 0 |
+| `@pfor reduction = (+, s)` | 0.38 / 0.54 | 0.39 / 0.58 | 0.33 / 0.48 | 0.39 / 0.56 | 0 |
+| Polyester `@batch` (v0.7.19) | 0.25 / 0.39 | 0.27 / 0.41 | 0.23 / 0.35 | 0.24 / 0.37 | 0 |
+| `Threads.@threads :static` | 11.1 / **113** | 1.87 / 2.58 | 9.33 / **114** | 1.66 / 2.69 | 42 (2.9 KB) |
+| `Threads.@threads :dynamic` | 2.55 / 3.90 | 2.49 / 3.74 | 2.35 / 3.76 | 2.37 / 3.77 | 42 (2.9 KB) |
 | serial loop | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0 |
-
-Minima below Polyester's come from samples in which the calling task ran all chunks itself
-(see "Stealing"), which is cheap for 64 trivial iterations.
 
 - `-t 8` is the default since Julia 1.12: 8 default threads **plus one interactive thread**,
   so 9 threads share 8 cores. `Threads.@threads :static` then pays about the scheduler's

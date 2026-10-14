@@ -387,33 +387,39 @@ end
 (w::WorkerCode)() = worker_loop(w.pool::Pool, w.k)
 
 function worker_loop(pool::Pool, k::Int)
+    while !run_commands(pool, k)
+    end
+    return
+end
+
+# Runs commands until `STOP` (returns `true`) or until a chunk throws (returns `false`).
+# One exception handler per stretch of commands, not one per chunk (an `enter` costs about
+# as much as a small chunk). Not inlined: the frame that caught the exception must be gone
+# before the worker waits for the next command, else on Julia 1.10 it keeps the exception
+# (and what it refers to, such as the arrays of the loop body) alive.
+@noinline function run_commands(pool::Pool, k::Int)
     ws = pool.workers[k]
     ev = pool.events[k]
     flag = pool.sleepflags[k]
-    while true
-        # One exception handler for the lifetime of the worker, not one per chunk (an
-        # `enter` costs about as much as a small chunk); a chunk that throws lands in the
-        # `catch`, which records the exception and re-enters the loop
-        try
-            while true
-                cmd = wait_for_command(ws, flag, ev, pool.oversubscribed)
-                if cmd == STOP
-                    @atomic :release ws.cmd = 0
-                    return nothing
-                end
-                wake_children(
-                    pool, cmd, @atomic(:monotonic, pool.nchunks),
-                    @atomic(:monotonic, pool.skip)
-                )
-                run_job_in_scope(pool, cmd)
+    try
+        while true
+            cmd = wait_for_command(ws, flag, ev, pool.oversubscribed)
+            if cmd == STOP
                 @atomic :release ws.cmd = 0
+                return true
             end
-        catch err
-            pool.errs[k] = CapturedException(err, catch_backtrace())
+            wake_children(
+                pool, cmd, @atomic(:monotonic, pool.nchunks),
+                @atomic(:monotonic, pool.skip)
+            )
+            run_job_in_scope(pool, cmd)
             @atomic :release ws.cmd = 0
         end
+    catch err
+        pool.errs[k] = CapturedException(err, catch_backtrace())
+        @atomic :release ws.cmd = 0
     end
-    return
+    return false
 end
 
 function Pool()

@@ -15,8 +15,8 @@ splits its range into one contiguous chunk per thread, runs chunk 1 on the calli
 hands the other chunks to the workers. After a loop, idle workers spin for a short while
 (100 µs by default) before they go to sleep, so loops that follow each other closely do not
 pay for creating, scheduling and waking up tasks. Starting a loop costs about 0.35 µs and
-allocates nothing, against 2–4 µs and about 3 KB for `Threads.@threads` or OhMyThreads'
-default scheduler (see [Overhead](#overhead)).
+allocates nothing after the first run of that loop, against 2–4 µs and about 3 KB for
+`Threads.@threads` or OhMyThreads' default scheduler (see [Overhead](#overhead)).
 
 ## Installation
 
@@ -132,10 +132,13 @@ to loop over by value) and `chunks`/`index_chunks` objects.
 - **Waking up.** Sleeping workers are woken in a binary tree: whoever takes chunk `c` wakes
   the workers of chunks `2c` and `2c + 1`. The caller wakes at most two workers itself, so
   waking all workers takes O(log n) steps on its critical path instead of n.
-- **No allocations.** Starting a loop allocates nothing. The chunk closure is stored in a
-  typed slot that the team reuses, and the reduction partials in a reused buffer. Tested
-  with `@allocated` on Julia 1.10 to nightly. On Julia 1.10 and 1.11, reductions allocate
-  16 bytes per loop (also when they run serially).
+- **Allocates once.** The first loop allocates: the team itself at the first loop of the
+  process, one typed slot per type of chunk closure (the loop body and what it captures)
+  and one buffer per result type of a reduction. Later loops of the same kind allocate
+  nothing, so a hot loop that runs many times costs no allocation after its first run.
+  Tested with `@allocated` on Julia 1.10 to nightly. On Julia 1.10 and 1.11, reductions
+  allocate 16 bytes per loop (also when they run serially). The slots keep the last closure
+  of each type (and the arrays it captures) alive until `shutdown!()`.
 - **Barriers.** `@barrier` (`OhMyThreads.Experimental`) needs a fixed number of tasks that
   run at the same time. The team does not promise that (see "Stealing"), so the team
   schedulers reject `ntasks`, which `@barrier` requires. Use `DynamicScheduler` for such loops.
@@ -293,8 +296,7 @@ other, and the calling task ends up running most chunks itself. In Trixi.jl, thr
 stage updates via Polyester together with the team made a time step about 5x slower than
 serial stage updates.
 
-**Other.** The team keeps a reference to the last chunk closure of each type (and the arrays
-it captures) until `shutdown!()`. Precompilation always runs loops serially.
+**Other.** Precompilation always runs loops serially.
 
 ## License
 

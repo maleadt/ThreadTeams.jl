@@ -144,8 +144,8 @@ Per-loop time for a loop with 64 trivial iterations (`x[i] += 1.0`), `benchmark/
 pinned to 8 cores (`taskset -c 8-15`) of a Ryzen 9 5950X, Julia 1.12.7 and 1.13.1, `OPENBLAS_NUM_THREADS=1`. Polyester.jl 0.7.18 was
 loaded from a separate environment for comparison (\* on 1.13 from an earlier run, with
 0.7.19); OhMyThreads.jl 0.8.7 and KernelAbstractions.jl 0.10.0 (`foreach_index` on the
-`CPU` backend, followed by `synchronize`) and FixedSizeArrays.jl 1.4.2 come from the
-benchmark environment. Values are min / median in µs.
+`CPU` backend, followed by `synchronize`) come from the benchmark environment. Values are
+min / median in µs.
 
 **These numbers come from one shared machine, with other jobs running on the same cores.
 Minima are more reliable than medians.**
@@ -164,16 +164,7 @@ Minima are more reliable than medians.**
 | OhMyThreads `tmapreduce(+)` | 3.99 / 4.95 | 4.03 / 4.90 | 3.32 / 4.30 | 3.39 / 4.36 | 64–66 (3.6 KB) |
 | KernelAbstractions `foreach_index` (v0.10.0) | 3.08 / 3.91 | 3.00 / 3.99 | 3.30 / 5.91 | 3.16 / 3.83 | 5 (96 B) |
 | serial loop | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0 |
-| `tforeach`, `TeamScheduler()`, `FixedSizeVector` | 0.36 / 0.42 | 0.35 / 0.42 | 0.36 / 0.43 | 0.37 / 0.44 | 0 |
-| `tmapreduce`, `TeamScheduler()`, `FixedSizeVector` | 0.36 / 0.45 | 0.33 / 0.44 | 0.39 / 0.47 | 0.38 / 0.46 | 0 |
-| Polyester `@batch`, `FixedSizeVector` | 0.23 / 0.38 | 0.26 / 0.39 |  |  | 0 |
-| `Threads.@threads :dynamic`, `FixedSizeVector` | 2.56 / 3.98 | 2.38 / 3.74 | 2.31 / 3.77 | 2.31 / 3.64 | 42 (3.0 KB) |
-| OhMyThreads `tforeach`, `FixedSizeVector` | 4.18 / 5.14 | 4.27 / 5.14 | 3.33 / 4.51 | 3.32 / 4.48 | 66–68 (3.8 KB) |
-| serial loop, `FixedSizeVector` | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0.02 / 0.02 | 0 |
 
-- The `FixedSizeVector` rows (FixedSizeArrays.jl) check whether the array type matters, since
-  Polyester converts arrays to `PtrArray`s: it does not at this size. The loop body runs on a
-  view of the input, and the per-loop cost is the hand-off, not array metadata.
 - Pass the scheduler as an object. A symbol (`scheduler = :team`, `@set scheduler = :team`)
   is resolved by OhMyThreads with a dynamic dispatch, which costs about 0.3 µs and 64 bytes
   per loop.

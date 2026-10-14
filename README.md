@@ -179,11 +179,20 @@ If the enclosing function assigns a variable more than once (e.g. in both branch
 type-unstable and allocates. Assign such variables once (a single destructuring assignment
 works) or move the loop into its own function, and check hot loops with `@code_warntype`
 or `@allocated`. Polyester's `@batch` passes the free variables as arguments and does not
-have this problem.
+have this problem. On Julia 1.10, a closure also stores a captured *type* (e.g., `T = eltype(x)` or
+`MeshT = typeof(mesh)`) as a `DataType` field, so every call that passes it inside the loop
+is a dynamic dispatch. Use `eltype(x)` / `typeof(mesh)` in the loop body instead.
+Julia 1.11 and newer keep the type (`Type{T}`).
 
 **Bounds facts.** Code inside the closure does not see facts that the caller established
 (e.g. array sizes from a `size` check). Some kernels can be slower per element in parallel
 chunks than in the serial loop that runs for a single chunk.
+
+**Other spinning pools.** Polyester.jl (e.g., through FastBroadcast.jl's `Threaded()` in
+OrdinaryDiffEq.jl) and the pool both pin spinning tasks to the same threads. They block each
+other, and the calling task ends up running most chunks itself. In Trixi.jl, threaded RK
+stage updates via Polyester together with the pool made a time step about 5x slower than
+serial stage updates.
 
 **Other.** The pool keeps a reference to the last chunk closure of each type (and the arrays
 it captures) until `shutdown!()`. Precompilation always runs loops serially.

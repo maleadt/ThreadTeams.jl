@@ -14,6 +14,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   benchmark:
+    # `pull_request_target` runs with a token that can write to pull requests, and the job
+    # executes the benchmark file of the pull request: only for pull requests from people
+    # with write access to the repository (others can be benchmarked locally)
+    if: contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

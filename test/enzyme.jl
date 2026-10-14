@@ -103,14 +103,18 @@ end
         @test dxs[2] ≈ 2 .* (cos.(x) .* x .+ sin.(x))
     end
     @testset "derivative chunks run on the team" begin
-        # Repeated, so that the workers are awake (otherwise the caller may run every chunk
-        # itself, see "Stealing" in the README)
+        # The chunks of a sleeping worker are run by the caller (see "Stealing" in the
+        # docs), and a wake-up can take longer than these short loops on a loaded CI
+        # runner: the workers are kept spinning with a parallel phase, and the loop is
+        # repeated so that they get a chunk at least once
         tids = zeros(Int, length(x))
         seen = Set{Int}()
-        for _ in 1:50
-            dx = Enzyme.gradient(Reverse, ad_threads, x, Const(tids))[1]
-            @test dx ≈ 2x
-            union!(seen, tids)
+        ThreadTeams.parallel_phase() do
+            for _ in 1:50
+                dx = Enzyme.gradient(Reverse, ad_threads, x, Const(tids))[1]
+                @test dx ≈ 2x
+                union!(seen, tids)
+            end
         end
         if NW > 1
             @test length(seen) > 1

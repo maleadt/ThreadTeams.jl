@@ -30,15 +30,24 @@
     end
 
     @testset "uses all threads" begin
+        # Workers only take chunks while they are awake; the chunks of a sleeping worker
+        # are run by the caller (see "Stealing" in the docs). On a loaded CI runner, waking
+        # up can take longer than the whole loop, so the workers are kept spinning with a
+        # parallel phase, and the loop is repeated a few times.
         if NW > 1
-            tids = zeros(Int, 16NW)
-            tforeach(eachindex(tids); scheduler = GPS(chunksize = 1)) do i
-                tids[i] = Threads.threadid()
-                t = time_ns()
-                while time_ns() - t < 100_000  # 100 µs
+            nthreads_used = ThreadTeams.parallel_phase() do
+                maximum(1:5) do _
+                    tids = zeros(Int, 16NW)
+                    tforeach(eachindex(tids); scheduler = GPS(chunksize = 1)) do i
+                        tids[i] = Threads.threadid()
+                        t = time_ns()
+                        while time_ns() - t < 100_000  # 100 µs
+                        end
+                    end
+                    length(unique(tids))
                 end
             end
-            @test length(unique(tids)) > 1
+            @test nthreads_used > 1
         end
     end
 

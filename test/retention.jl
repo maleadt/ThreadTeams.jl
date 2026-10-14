@@ -9,20 +9,23 @@ function loop_over_temporary()
     return w, s, WeakRef(v)
 end
 
-# Also when a chunk throws: the exception and the array it refers to are dropped
+# Also when a chunk throws: the exception and the array it refers to are dropped. (No
+# `@inbounds` in these bodies: with it, Julia 1.10 running with code coverage keeps the
+# array alive after the exception, through nothing the team holds; not on Julia ≥ 1.11,
+# without coverage, or with a plain loop.)
 function failing_loop_over_temporary()
     x = zeros(10^6)
     w = WeakRef(x)
     try
         tforeach(
-            i -> (@inbounds x[i] += 1.0; i == 10^6 && throw(DomainError(x))),
+            i -> (x[i] += 1.0; i == 10^6 && throw(DomainError(x))),
             eachindex(x); scheduler = team
         )
     catch
     end
     try
         tforeach(
-            i -> (@inbounds x[i] += 1.0; i == 10^6 && throw(DomainError(x))),
+            i -> (x[i] += 1.0; i == 10^6 && throw(DomainError(x))),
             eachindex(x); scheduler = GreedyTeamScheduler(chunksize = 1000)
         )
     catch

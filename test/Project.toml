@@ -7,6 +7,6 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
 Aqua = "0.8"
-Enzyme = "0.13.100"
+Enzyme = "0.13.216"
 OhMyThreads = "0.8.7"
 ParallelTestRunner = "2.9"

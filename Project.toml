@@ -15,6 +15,6 @@ ThreadTeamsEnzymeCoreExt = "EnzymeCore"
 
 [compat]
 ChunkSplitters = "3.1"
-EnzymeCore = "0.8.12"
+EnzymeCore = "0.8.23"
 OhMyThreads = "0.8.7"
 julia = "1.10"

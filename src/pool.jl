@@ -142,8 +142,10 @@ mutable struct Pool
     const errs::Vector{Any}
     # `tid2worker[tid]`: index of the worker running on thread `tid`, or `0`
     const tid2worker::Vector{Int}
-    # One `Base.RefValue{F}` per chunk function type `F`, and one partials buffer per
-    # result type of a reduction. Only accessed while holding `POOL.busy`.
+    # One `RefValue{F}` per chunk function type `F`, and one partials buffer per result type
+    # of a reduction. Only accessed while holding `POOL.busy`. Both are cleared after every
+    # region, so that the chunk function (and what it captures) and the partial results can
+    # be collected; they are allocated once per type.
     const slots::IdDict{Type, Any}
     const buffers::IdDict{Type, Any}
     # Greedy regions: the chunk counter, and per participant the exception it caught and
@@ -461,10 +463,33 @@ end
     return nothing
 end
 
+# The slot that hands the chunk function of type `F` to the workers: a `RefValue{F}` that
+# is already allocated, so storing the function does not allocate.
 @noinline function job_slot(pool::Pool, ::Type{F}) where {F}
     return get!(() -> Base.RefValue{F}(), pool.slots, F)::Base.RefValue{F}
 end
 
+# Drop the chunk function from its slot after the region, so that it (and the arrays it
+# captures) can be collected. `setfield!` can not make the field undefined again, and
+# storing a struct with null pointer fields would trip the GC write barrier, so the bytes
+# of the field are zeroed directly. That is the state `Base.RefValue{F}()` creates: the
+# field may be undefined (`RefValue` has a `new()` constructor), and for an inline immutable
+# with pointer fields Julia represents "undefined" by a null first pointer, which is what
+# the zeroed bytes are. Afterwards `isdefined(slot, :x)` is false and `slot[]` throws an
+# `UndefRefError`; for an isbits `F` the zero bytes are a value, for a mutable `F` a null
+# (undefined) reference. The GC skips null fields, and removing references needs no write
+# barrier. Nothing reads the slot outside a region.
+@inline function clear_slot!(slot::Base.RefValue{F}) where {F}
+    GC.@preserve slot begin
+        ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t),
+              pointer_from_objref(slot), 0, sizeof(Base.RefValue{F}))
+    end
+    return nothing
+end
+
+# The buffer for the partial results of a reduction. It is emptied after the region
+# (`empty!` nulls the elements of a buffer of boxed values but keeps the capacity), so
+# resizing it here allocates only when a region needs more chunks than any before.
 @noinline function partials_buffer(pool::Pool, ::Type{T}, n::Int) where {T}
     buf = get!(() -> Vector{T}(undef, n), pool.buffers, T)::Vector{T}
     length(buf) < n && resize!(buf, n)
@@ -520,6 +545,16 @@ end
 function dispatch!(pool::Pool, f::F, n::Int) where {F}
     slot = job_slot(pool, F)
     slot[] = f
+    try
+        dispatch!(pool, slot, n)
+    finally
+        clear_slot!(slot)
+    end
+    return nothing
+end
+
+function dispatch!(pool::Pool, slot::Base.RefValue{F}, n::Int) where {F}
+    f = slot[]
     tid = Threads.threadid()
     skip = tid <= length(pool.tid2worker) ? @inbounds(pool.tid2worker[tid]) : 0
     # Published to the workers by the (sequentially consistent) stores of the commands
@@ -768,11 +803,12 @@ end
         end
         return acc
     end
+    buf = partials_buffer(pool, T, n)
     try
-        buf = partials_buffer(pool, T, n)
         run_on_pool(pool, StoreChunk{F, T}(f, buf), n, sched)
         return fold_partials(op, buf, n)
     finally
+        empty!(buf)   # let the partial results be collected
         release_pool()
     end
 end
@@ -780,10 +816,8 @@ end
 """
     ThreadTeams.shutdown!()
 
-Stop all worker tasks and drop the pool, including the references it keeps to the last
-chunk function of each type (and thereby to the arrays captured by it). Waits for a
-parallel region running in another task to finish first. The next parallel loop starts
-a new pool.
+Stop all worker tasks and drop the pool. Waits for a parallel region running in another
+task to finish first. The next parallel loop starts a new pool.
 
 Throws an error when called from inside a parallel loop.
 """

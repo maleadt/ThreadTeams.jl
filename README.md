@@ -132,12 +132,7 @@ to loop over by value) and `chunks`/`index_chunks` objects.
 - **Waking up.** Sleeping workers are woken in a binary tree: whoever takes chunk `c` wakes
   the workers of chunks `2c` and `2c + 1`. The caller wakes at most two workers itself, so
   waking all workers takes O(log n) steps on its critical path instead of n.
-- **Allocates once.** The first loop allocates: the team itself at the first loop of the
-  process, one typed slot per type of chunk closure (the loop body and what it captures)
-  and one buffer per result type of a reduction. Later loops of the same kind allocate
-  nothing, so a hot loop that runs many times costs no allocation after its first run.
-  Tested with `@allocated` on Julia 1.10 to nightly. On Julia 1.10 and 1.11, reductions
-  allocate 16 bytes per loop (also when they run serially). The slots keep the last closure
+- **Allocates once.** The first execution of a parallel region allocates once. Later execution of the same parallel region allocate nothing. The slots keep the last closure
   of each type (and the arrays it captures) alive until `shutdown!()`.
 - **Barriers.** `@barrier` (`OhMyThreads.Experimental`) needs a fixed number of tasks that
   run at the same time. The team does not promise that (see "Stealing"), so the team
@@ -264,40 +259,20 @@ task occupies a worker's thread without yielding, the calling task runs that wor
 itself (see "Stealing"), and the loop does not wait for the task. A worker that the OS
 deschedules *while* it runs a chunk still delays the loop.
 
-**Automatic differentiation.** Enzyme.jl (and other AD tools that work on the code of the
-loop) cannot differentiate through the team itself. The hand-off goes through atomics,
-`invokelatest` and long-lived tasks that the AD tool does not see. Enzyme rules that
-differentiate the loop chunk by chunk and run the derivative chunks on the team are on the
-branch `vc/enzyme-rules` (written for the previous loop API, not merged yet). Until then,
-differentiate a serial version or `Threads.@threads`, which Enzyme supports; a library
-using the team should offer a way to switch to `Threads.@threads` or to serial loops.
-
 **Captured variables (boxing).** The loop body becomes a closure (as with `Threads.@threads`).
 If the enclosing function assigns a variable more than once (e.g. in both branches of an
 `if`) and the loop body uses it, Julia captures it in a `Core.Box`. The loop is then
 type-unstable and allocates, and assigning the variable in the body is a data race.
 OhMyThreads' check applies to the team schedulers too: such a loop throws a
 `BoxedVariableError` (opt out with `@allow_boxed_captures`). Assign such variables once (a
-single destructuring assignment works) or move the loop into its own function. Polyester's
-`@batch` passes the free variables as arguments and does not have this problem. On Julia
-1.10, a closure also stores a captured *type* (e.g., `T = eltype(x)` or
-`MeshT = typeof(mesh)`) as a `DataType` field, so every call that passes it inside the loop
-is a dynamic dispatch. Use `eltype(x)` / `typeof(mesh)` in the loop body instead.
-Julia 1.11 and newer keep the type (`Type{T}`).
+single destructuring assignment works) or move the loop into its own function.
 
-**Bounds facts.** Code inside the closure does not see facts that the caller established
-(e.g. array sizes from a `size` check), and the loop body is always called through the
-closure, also when the loop runs serially. Some kernels can be slower per element than
-in a plain serial loop.
-
-**Other spinning pools.** Polyester.jl (e.g., through FastBroadcast.jl's `Threaded()` in
-OrdinaryDiffEq.jl) and the team both pin spinning tasks to the same threads. They block each
-other, and the calling task ends up running most chunks itself. In Trixi.jl, threaded RK
-stage updates via Polyester together with the team made a time step about 5x slower than
-serial stage updates.
 
 **Other.** Precompilation always runs loops serially.
 
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## AI Usage
+This package was developed with Claude Code Opus 5.5 and Fable 5.1

@@ -325,7 +325,13 @@ end
 # Called by the workers with `invoke_in_world` in the world age of the dispatcher (as for a
 # task it would have spawned), so that chunk functions whose types were defined after the
 # workers were started can be called.
-function run_job(slot::Base.RefValue{F}, chunk::Int) where {F}
+#
+# The dispatcher runs its chunks through this function as well, and it is not inlined: then
+# every chunk runs the same machine code. Otherwise the chunk function is inlined into
+# `dispatch!` (twice: for chunk 1 and for stolen chunks), and the dispatcher runs its own
+# copy of the loop body, whose code layout and thus speed can differ from the workers' copy
+# by a few percent (and which makes `dispatch!` larger and slower to compile).
+@noinline function run_job(slot::Base.RefValue{F}, chunk::Int) where {F}
     slot[](chunk)
     return nothing
 end
@@ -690,7 +696,7 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
         # Chunk 1 is ours: wake the workers of chunks 2 and 3, they wake the others
         wake_children(pool, 1, n, skip)
         try
-            f(1)
+            run_job(slot, 1)   # the workers' code, see `run_job`
         catch
             # Cancel the chunks that were not started and wait for the others: never leave
             # workers running when returning from the region
@@ -711,7 +717,7 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
                 # We took over the chunk, and with it the wake-ups of its children
                 wake_children(pool, chunk, n, skip)
                 try
-                    f(chunk)
+                    run_job(slot, chunk)
                 catch err
                     @inbounds pool.errs[k] = CapturedException(err, catch_backtrace())
                 end

@@ -639,11 +639,16 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
     slot[] = f
     tid = Threads.threadid()
     skip = tid <= length(pool.tid2worker) ? @inbounds(pool.tid2worker[tid]) : 0
-    # Published to the workers by the (sequentially consistent) stores of the commands
-    @atomic :monotonic pool.job = slot
-    @atomic :monotonic pool.nchunks = n
-    @atomic :monotonic pool.skip = skip
-    @atomic :monotonic pool.scope = current_scope()
+    # Published to the workers by the (sequentially consistent) stores of the commands.
+    # Stored only when they changed: a store takes the cache line away from every worker,
+    # which then misses on it when it reads the region (one miss per worker and loop, on
+    # the critical path). Consecutive loops usually have the same values, and loads keep
+    # the line shared.
+    (@atomic :monotonic pool.job) === slot || (@atomic :monotonic pool.job = slot)
+    (@atomic :monotonic pool.nchunks) == n || (@atomic :monotonic pool.nchunks = n)
+    (@atomic :monotonic pool.skip) == skip || (@atomic :monotonic pool.skip = skip)
+    scope = current_scope()
+    (@atomic :monotonic pool.scope) === scope || (@atomic :monotonic pool.scope = scope)
     world = world_age()
     old = @atomic :monotonic pool.world
     # box the world age only when it changed
@@ -709,9 +714,11 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
     finally
         # Keep neither the chunk function (see `clear_slot!`), nor the scope, nor the
         # exceptions of the chunks alive (every used worker is idle again here, also when
-        # a chunk threw)
+        # a chunk threw). `pool.job` keeps pointing to the cleared slot, which is a
+        # constant of `job_slot` anyway. The scope is cleared only if it is not the empty
+        # one (`nothing`), which is the common case and needs no store.
         clear_slot!(slot)
-        @atomic :monotonic pool.scope = nothing
+        scope === nothing || (@atomic :monotonic pool.scope = nothing)
         for chunk in 2:n
             @inbounds pool.errs[worker_for_chunk(chunk, skip)] = nothing
         end

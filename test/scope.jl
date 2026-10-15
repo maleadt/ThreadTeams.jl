@@ -37,16 +37,22 @@
     @test job isa ThreadTeams.JobClosure
     @test job.world == ThreadTeams.world_age()
     @test ThreadTeams.job_closure(slot) === job
-    job(5)
+    # called as by worker 1, from its own slot
+    ThreadTeams.worker_slots(typeof(f), 1)[1][] = f
+    job(1, 5)
     @test r[5] == 1
     @eval pw_world_g(::Int8) = 3
     job2 = Base.invokelatest(ThreadTeams.job_closure, slot)
     @test job2 !== job
     @test job2.world > job.world
-    job2(5)
+    wslot = ThreadTeams.worker_slots(typeof(f), 1)[1]   # emptied after every chunk
+    wslot[] = f
+    job2(1, 5)
     @test r[5] == 3
-    job(5)   # the older closure still runs in its world
+    wslot[] = f
+    job(1, 5)   # the older closure still runs in its world
     @test r[5] == 1
+    @test !isassigned(wslot)
     ThreadTeams.clear_slot!(slot)
 end
 

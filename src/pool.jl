@@ -1,9 +1,10 @@
 # The worker pool.
 #
 # There is one sticky worker task per thread of the `:default` thread pool. Worker `k`
-# runs on thread `tids[k]` and waits for commands in its own `WorkerState` (padded to
-# avoid false sharing). A command is the index of the chunk to run, `0` means idle,
-# `RUNNING` that the worker claimed its chunk and `STOP` asks the worker to exit.
+# runs on thread `tids[k]` and waits for commands in its own `WorkerState` (on a cache
+# line of its own, see `CACHE_LINE`). A command is the index of the chunk to run, `0`
+# means idle, `RUNNING` that the worker claimed its chunk and `STOP` asks the worker to
+# exit.
 #
 # A parallel region is started by `dispatch!`:
 #
@@ -128,31 +129,47 @@ const TeamSchedulers = Union{TeamScheduler, GreedyTeamScheduler}
     throw(ArgumentError("$name does not take the keyword argument$(length(kwargs) > 1 ? "s" : "") $ks"))
 end
 
+# Padding around the atomic fields that the workers and the dispatcher hammer (a worker's
+# command, its sleep flag, the greedy chunk counter), so that each lies on a cache line
+# that no other field of the pool, and no object allocated next to it, shares. The field
+# sits at `CACHE_LINE - 8` bytes from the start of the object and `CACHE_LINE` bytes of
+# padding follow it, so its line lies within the object for any 16-byte aligned address.
+# Apple silicon has 128-byte lines; x86 and the other AArch64 cores have 64-byte lines.
+# Padding to 128 bytes on every AArch64 CPU costs a few hundred bytes.
+const CACHE_LINE = Sys.ARCH === :aarch64 ? 128 : 64
+const PAD_BEFORE = CACHE_LINE ÷ sizeof(Int) - 1
+const PAD_AFTER = CACHE_LINE ÷ sizeof(Int)
+const PadBefore = NTuple{PAD_BEFORE, Int}
+const PadAfter = NTuple{PAD_AFTER, Int}
+pad_before() = ntuple(_ -> 0, Val(PAD_BEFORE))
+pad_after() = ntuple(_ -> 0, Val(PAD_AFTER))
+
 # Shared chunk counter of a `GreedyTeamScheduler` region, on its own cache line
 mutable struct ChunkCounter
-    _pad0::NTuple{7, Int}
+    _pad0::PadBefore
     @atomic next::Int
-    _pad1::NTuple{8, Int}
+    _pad1::PadAfter
 end
-ChunkCounter() = ChunkCounter(ntuple(_ -> 0, Val(7)), 0, ntuple(_ -> 0, Val(8)))
+ChunkCounter() = ChunkCounter(pad_before(), 0, pad_after())
 
+# The command of a worker, on its own cache line
 mutable struct WorkerState
+    _pad0::PadBefore
     @atomic cmd::Int
-    # Padding: keep the fields of different workers on different cache lines
-    _pad::NTuple{15, Int}
+    _pad1::PadAfter
 end
-WorkerState() = WorkerState(0, ntuple(_ -> 0, Val(15)))
+WorkerState() = WorkerState(pad_before(), 0, pad_after())
 
 # Whether a worker is asleep (or about to be), on a cache line of its own, apart from its
 # command: it is written only when the worker goes to sleep or wakes up, so the loads of
 # `wake_chunk` (two per chunk, on the critical path of every worker) hit a line that stays
 # shared between all cores, instead of the line that the worker is claiming its chunk on.
 mutable struct SleepFlag
-    _pad0::NTuple{8, Int}
+    _pad0::PadBefore
     @atomic sleeping::Bool
-    _pad1::NTuple{8, Int}
+    _pad1::PadAfter
 end
-SleepFlag() = SleepFlag(ntuple(_ -> 0, Val(8)), false, ntuple(_ -> 0, Val(8)))
+SleepFlag() = SleepFlag(pad_before(), false, pad_after())
 
 mutable struct Pool
     # The current parallel region, written by the dispatcher before it hands out chunks:

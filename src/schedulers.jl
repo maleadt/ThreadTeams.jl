@@ -121,6 +121,12 @@ function Implementation._tmapreduce(
         )
     end
     job.n == 1 && return job(1)
+    if OutputType === Nothing
+        # `tforeach` (and `@tasks` without a reduction) has no results to combine: run the
+        # chunks without the partials buffer of `run_fold` and its exception handler
+        run_chunks(job, job.n, sched)
+        return nothing
+    end
     return run_fold(job, promise_task_local(op), job.n, sched)
 end
 

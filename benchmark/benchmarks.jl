@@ -8,6 +8,7 @@ using BenchmarkTools
 using ThreadTeams
 using Enzyme
 using FastBroadcast
+using FixedSizeArrays: FixedSizeArray
 
 const SUITE = BenchmarkGroup()
 
@@ -111,3 +112,45 @@ function fb_axpy9_serial!(a, b, c, d, e, f, g, h, i)
 end
 SUITE["fastbroadcast"]["9 arguments thread, 100x100x8"] = @benchmarkable fb_axpy9_thread!(xs...) setup = (xs = [rand(100, 100, 8) for _ in 1:9]) samples = 2_000 evals = 1 seconds = 3
 SUITE["fastbroadcast"]["9 arguments serial, 100x100x8"] = @benchmarkable fb_axpy9_serial!(xs...) setup = (xs = [rand(100, 100, 8) for _ in 1:9]) samples = 2_000 evals = 1 seconds = 3
+
+# Downstream: the loop with which Trixi.jl resets the time derivative (`set_zero!`, timer
+# "reset ∂u/∂t") in every evaluation of the right-hand side, on its `:pool` threading
+# backend. `du` is a `[variable, node, node, element]` array (a `FixedSizeArray`, as Trixi's
+# `wrap_array`) of the 2D linear advection example with 256 elements (polynomial degree 3).
+# Each iteration zeros one element (16 values), so the loop takes well under a microsecond
+# and its cost is mostly the hand-off. Trixi's `@threaded` passes one chunk per thread
+# (`chunks(...; n = nthreads())`) to `tforeach`. In Trixi, the loops of a right-hand side
+# follow each other directly: "10 in a row" runs ten loops back to back.
+function trixi_reset_team!(du)
+    n = size(du, 4)
+    parts = chunks(1:n; n = min(Threads.nthreads(), n))
+    tforeach(parts; scheduler = TEAM) do part
+        for element in part
+            @inbounds view(du, :, :, :, element) .= zero(eltype(du))
+        end
+    end
+    return
+end
+function trixi_reset_serial!(du)
+    for element in axes(du, 4)
+        @inbounds view(du, :, :, :, element) .= zero(eltype(du))
+    end
+    return
+end
+function trixi_reset_static!(du)
+    Threads.@threads :static for element in axes(du, 4)
+        @inbounds view(du, :, :, :, element) .= zero(eltype(du))
+    end
+    return
+end
+function ten_in_a_row(f::F, du) where {F}
+    for _ in 1:10
+        f(du)
+    end
+    return
+end
+trixi_du() = FixedSizeArray(zeros(1, 4, 4, 256))
+SUITE["trixi"]["reset du team"] = @benchmarkable trixi_reset_team!(du) setup = (du = trixi_du()) samples = 10_000 evals = 1 seconds = 3
+SUITE["trixi"]["reset du team, 10 in a row"] = @benchmarkable ten_in_a_row(trixi_reset_team!, du) setup = (du = trixi_du()) samples = 10_000 evals = 1 seconds = 3
+SUITE["trixi"]["reset du Threads.@threads :static"] = @benchmarkable trixi_reset_static!(du) setup = (du = trixi_du()) samples = 10_000 evals = 1 seconds = 3
+SUITE["trixi"]["reset du serial"] = @benchmarkable trixi_reset_serial!(du) setup = (du = trixi_du()) samples = 10_000 evals = 1 seconds = 3

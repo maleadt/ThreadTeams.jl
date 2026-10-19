@@ -1,8 +1,9 @@
 # How many chunks a parallel operation gets, and the index range of a chunk.
 
-# Number of elements of an iteration space
-@inline plength(itr::AbstractUnitRange) = length(itr)
-@inline plength(itr) = lastindex(itr) - firstindex(itr) + 1
+# Number of elements of an iteration space (as an `Int`: the length of a `UInt` or `Int128`
+# range, or of an `Int64` range on 32-bit, is not one)
+@inline plength(itr::AbstractUnitRange) = Int(length(itr))
+@inline plength(itr) = Int(lastindex(itr) - firstindex(itr) + 1)
 
 """
     ThreadTeams.nchunks(itr, scheduler = TeamScheduler()) -> Int

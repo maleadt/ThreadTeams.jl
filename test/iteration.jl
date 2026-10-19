@@ -2,6 +2,10 @@
     for itr in (
             1:0, 1:1, 1:2, 1:(NW - 1), 1:NW, 1:(NW + 1), 0:10, -5:5, 3:1000,
             Base.OneTo(37), 1:3:100, 10:-1:1, UInt8(3):UInt8(40),
+            # `length` is not an `Int` (`Int64` on 32-bit)
+            UInt(1):UInt(50), Int128(-3):Int128(40), Int64(1):Int64(30),
+            UInt(1):UInt(3):UInt(50), Int128(40):Int128(-2):Int128(-3),
+            Int64(1):Int64(2):Int64(30),
             CartesianIndices((3, 5)), [2, 4, 8, 16, 32], reshape(1:24, 4, 6),
             view(collect(1:50), 2:2:40),
         )

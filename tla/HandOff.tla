@@ -182,7 +182,7 @@ DStore ==
             /\ UNCHANGED scv
        ELSE /\ IF OrdFence = "sc" THEN Fence(0) ELSE UNCHANGED <<view, scv>>
             /\ UNCHANGED mem
-            /\ d' = [d EXCEPT !.pc = "wake", !.wq = Children(1), !.ret = "steal", !.c = 2]
+            /\ d' = [d EXCEPT !.pc = "wake", !.wq = Children(1), !.ret = "steal", !.c = N + 1]
     /\ UNCHANGED <<ev, evv, w, runs, ranBy, skipped>>
 
 \* wake_children: for each chunk in wq, load `sleeping`, then `cmd`, then notify
@@ -206,16 +206,17 @@ DWakeCmd ==
     /\ d' = [d EXCEPT !.pc = "wake"]
     /\ UNCHANGED <<mem, scv, w, runs, ranBy, skipped>>
 
-\* after chunk 1: run the chunks that their workers have not claimed yet
+\* after chunk 1: run the chunks that their workers have not claimed yet, in decreasing
+\* order (the children of a chunk are stolen or claimed before it: no wake-ups)
 DSteal ==
     /\ d.pend = 0 /\ d.pc = "steal"
-    /\ IF d.c > N + 1
+    /\ IF d.c < 2
        THEN d' = [d EXCEPT !.pc = "idle", !.k = 1] /\ UNCHANGED view
        ELSE \E i \in Readable(0, Cmd(Wk(d.c))) :
             /\ view' = [view EXCEPT ![0] = ViewAfterRead(0, Cmd(Wk(d.c)), i, OrdSteal)]
             /\ IF mem[Cmd(Wk(d.c))][i].val = d.c
                THEN d' = [d EXCEPT !.pc = "stealcas", !.pend = Fences(OrdStealCAS)]
-               ELSE d' = [d EXCEPT !.c = @ + 1]
+               ELSE d' = [d EXCEPT !.c = @ - 1]
     /\ UNCHANGED <<mem, scv, ev, evv, w, runs, ranBy, skipped>>
 
 DStealCAS ==
@@ -225,10 +226,9 @@ DStealCAS ==
           THEN /\ RMW(0, l, 0, OrdStealCAS)
                /\ runs' = [runs EXCEPT ![d.c] = @ + 1]
                /\ ranBy' = [ranBy EXCEPT ![d.c] = 0]
-               /\ d' = [d EXCEPT !.pc = "wake", !.wq = Children(d.c), !.ret = "steal",
-                                 !.c = @ + 1, !.pend = Fences(OrdStealCAS)]
+               /\ d' = [d EXCEPT !.pc = "steal", !.c = @ - 1, !.pend = Fences(OrdStealCAS)]
           ELSE /\ view' = [view EXCEPT ![0] = ViewAfterRead(0, l, Newest(l), "rlx")]
-               /\ d' = [d EXCEPT !.pc = "steal", !.c = @ + 1, !.pend = Fences(OrdStealCAS)]
+               /\ d' = [d EXCEPT !.pc = "steal", !.c = @ - 1, !.pend = Fences(OrdStealCAS)]
                /\ UNCHANGED <<mem, runs, ranBy, skipped>>
     /\ UNCHANGED <<scv, ev, evv, w, skipped>>
 

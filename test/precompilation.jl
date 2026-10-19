@@ -120,6 +120,11 @@ worlds_ok(jobs, w) = all(job isa ThreadTeams.JobClosure && job.world == w for jo
         # precompiles it; its cache files go to a temporary depot, in front of the others
         depot = joinpath(dir, "depot")
         env = Dict("JULIA_DEPOT_PATH" => join([depot; DEPOT_PATH], Sys.iswindows() ? ";" : ":"))
+        # `Pkg.test` leaves `@stdlib` out of the load path, and the offline resolve can run
+        # the artifact hooks of installed JLLs, which load stdlibs (`using TOML`)
+        if haskey(ENV, "JULIA_LOAD_PATH")
+            env["JULIA_LOAD_PATH"] = ENV["JULIA_LOAD_PATH"] * (Sys.iswindows() ? ";" : ":") * "@stdlib"
+        end
         code = REPORT * """
             using Pkg
             Pkg.offline(true)

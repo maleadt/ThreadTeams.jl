@@ -15,6 +15,34 @@
     @test all(!(tids[a] == tids[b] && overlap(a, b)) for a in 1:NW, b in 1:NW if a != b)
 end
 
+@testset "workers run chunks" begin
+    # Which task runs a chunk isn't guaranteed: the caller takes over the chunks of workers
+    # that have not woken up yet, also on a loaded machine where that is all of them. So the
+    # caller's first chunk waits until a worker has run a chunk; the caller can take over
+    # unclaimed chunks only after that. (Nothing else holds the team here, otherwise the
+    # loop would run on spawned tasks.)
+    if NW > 1
+        for sched in (team, GPS(chunksize = 1))
+            caller = current_task()
+            on_worker = Threads.Atomic{Bool}(false)
+            waited = Threads.Atomic{Bool}(false)
+            tforeach(1:(4NW); scheduler = sched) do i
+                if current_task() === caller
+                    # only once: the caller also runs the chunks it takes over
+                    Threads.atomic_xchg!(waited, true) && return
+                    t = time()
+                    while !on_worker[] && time() - t < 60
+                        yield()
+                    end
+                elseif current_task().code isa ThreadTeams.WorkerCode
+                    on_worker[] = true
+                end
+            end
+            @test on_worker[]
+        end
+    end
+end
+
 @testset "concurrent tasks" begin
     ntasks = 8
     results = zeros(Int, ntasks)

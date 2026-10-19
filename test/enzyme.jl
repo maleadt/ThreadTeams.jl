@@ -36,6 +36,14 @@ end
 ad_tmapreduce(x) = tmapreduce(abs2, +, x; scheduler = team)
 ad_greedy(x) = tmapreduce(abs2, +, x; scheduler = GreedyTeamScheduler(chunksize = 7))
 ad_active_closure(a) = tmapreduce(i -> a * i, +, 1:100; scheduler = team)
+# The operator reads a value that changes after the reduction: `w^(n - 1) * prod(abs2, x)`
+const AD_WEIGHT = Ref(2.0)
+function ad_stateful_op(x)
+    AD_WEIGHT[] = 2.0
+    s = tmapreduce(abs2, (a, b) -> AD_WEIGHT[] * a * b, x; scheduler = team)
+    AD_WEIGHT[] = 3.0
+    return s
+end
 function ad_tasks(x)
     return @tasks for i in eachindex(x)
         @set scheduler = team
@@ -72,6 +80,9 @@ end
         @test Enzyme.gradient(Reverse, ad_greedy, x)[1] ≈ 2x
         @test Enzyme.gradient(Reverse, ad_active_closure, a)[1] ≈ sum(1:100)
         @test Enzyme.gradient(Reverse, ad_tasks, x)[1] ≈ 3x .^ 2
+        y = collect(range(0.5, 1.5; length = 13))
+        @test Enzyme.gradient(Reverse, ad_stateful_op, y)[1] ≈
+            2 .* (2.0^12 * prod(abs2, y)) ./ y
     end
     @testset "forward" begin
         dx = ones(length(x))

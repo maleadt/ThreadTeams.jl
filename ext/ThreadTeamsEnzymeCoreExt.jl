@@ -232,7 +232,7 @@ function EnzymeRules.augmented_primal(
     if T === Nothing
         r = as_ref(f)
         rev, tapes = augmented_chunks(config, r, n.val, sched.val, overwritten)
-        return AugmentedReturn(nothing, nothing, (r, nothing, nothing, rev, tapes))
+        return AugmentedReturn(nothing, nothing, (r, nothing, nothing, rev, tapes, nothing))
     end
     check_fold(op, EnzymeRules.width(config))
     RT <: Union{Const, Active} ||
@@ -244,8 +244,23 @@ function EnzymeRules.augmented_primal(
             @inbounds dbuf[c] = make_zero(buf[c])
         end
     end
-    acc = EnzymeRules.needs_primal(config) ? fold_all(op.val, buf) : nothing
-    return AugmentedReturn(acc, nothing, (store, buf, dbuf, rev, tapes))
+    if RT <: Active && dbuf !== nothing
+        # The forward pass of the combine, with its tape: `op` may read memory that changes
+        # before the reverse pass
+        mode = set_runtime_activity(ReverseSplitWithPrimal, config)
+        fwd_c, rev_c = autodiff_thunk(
+            mode, Const{typeof(fold_all)}, RT, Core.Typeof(op), Duplicated{typeof(buf)}
+        )
+        tape_c, acc, _ = fwd_c(Const(fold_all), op, Duplicated(buf, dbuf))
+        combine = (rev_c, tape_c)
+    else
+        acc = EnzymeRules.needs_primal(config) ? fold_all(op.val, buf) : nothing
+        combine = nothing
+    end
+    return AugmentedReturn(
+        EnzymeRules.needs_primal(config) ? acc : nothing, nothing,
+        (store, buf, dbuf, rev, tapes, combine)
+    )
 end
 
 function EnzymeRules.reverse(
@@ -253,7 +268,7 @@ function EnzymeRules.reverse(
         dret, tape, f::Annotation, op::Annotation, n::Const{Int},
         sched::Const{<:TeamSchedulers}
     )
-    store, buf, dbuf, rev, tapes = tape
+    store, buf, dbuf, rev, tapes, combine = tape
     if buf === nothing
         # chunks without results
         r = rebind(f, store)
@@ -264,17 +279,10 @@ function EnzymeRules.reverse(
         # the partials store's shadow holds the chunk function's shadow reference
         store.dval[] = StorePartial(f.dval, dbuf)
     end
-    if dret isa Active && dbuf !== nothing
+    if dret isa Active && combine !== nothing
         # adjoints of the partial results, seeded with the adjoint of the result
-        mode = set_runtime_activity(ReverseSplitWithPrimal, config)
-        fwd_c, rev_c = autodiff_thunk(
-            mode, Const{typeof(fold_all)},
-            Active{typeof(dret.val)}, Core.Typeof(op),
-            Duplicated{typeof(buf)}
-        )
-        bufs = Duplicated(buf, dbuf)
-        tape_c = fwd_c(Const(fold_all), op, bufs)[1]
-        rev_c(Const(fold_all), op, bufs, dret.val, tape_c)
+        rev_c, tape_c = combine
+        rev_c(Const(fold_all), op, Duplicated(buf, dbuf), dret.val, tape_c)
     end
     # adjoints of the chunks (also of what they wrote into shadow memory, with a constant
     # result)

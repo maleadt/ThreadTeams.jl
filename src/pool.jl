@@ -803,8 +803,10 @@ end
     return nothing
 end
 
-# Called by whoever claims chunk `chunk`, before running it: wake the workers of chunks
-# `2chunk` and `2chunk + 1` (a binary tree: `n` sleeping workers wake in O(log n) steps).
+# Called for chunk 1, and by the worker that claims chunk `chunk` before running it (a
+# chunk the dispatcher steals has no children left to wake, see `steal_chunks`): wake the
+# workers of chunks `2chunk` and `2chunk + 1` (a binary tree: `n` sleeping workers wake in
+# O(log n) steps).
 # The dispatcher stores the commands in decreasing order, so a child's command precedes
 # its parent's. For the dispatcher's wake-ups, the fence after its stores and the sc loads
 # here guarantee that either the child sees its command before it sleeps, or we see that
@@ -917,10 +919,15 @@ end
 # nothing of the worker's is read after a steal; `wait_workers` acquires the results of
 # the workers that did claim. The worker of a stolen chunk never runs it, so the
 # dispatcher clears its slot (still in the dispatcher's cache) right away.
+#
+# Decreasing chunk order: the children of a chunk in the wake-up tree (`2chunk`,
+# `2chunk + 1`) are stolen or claimed before it, so stealing it wakes no one. In increasing
+# order the dispatcher woke the children of each chunk it stole, and then stole their
+# chunks too: a short loop after the workers fell asleep woke every worker for nothing.
 @inline function steal_chunks(
         pool::Pool, slot, n::Int, skip::Int, base::Int, wslots, copies::Bool
     )
-    for chunk in 2:n
+    for chunk in n:-1:2
         k = worker_for_chunk(chunk, skip)
         ws = @inbounds pool.workers[k]
         cmd = base | chunk
@@ -928,8 +935,6 @@ end
                 (@atomicreplace :monotonic ws.cmd cmd => 0).success
             copies && clear_slot!(@inbounds wslots[k])
             @atomic :monotonic pool.stolen = (@atomic :monotonic pool.stolen) + 1
-            # We took over the chunk, and with it the wake-ups of its children
-            wake_children(pool, cmd)
             try
                 run_chunk(slot, chunk)
             catch err

@@ -518,7 +518,7 @@ function worker_loop(pool::Pool, k::Int)
     return
 end
 
-# Run commands until `STOP` (returns `true`) or a chunk throws (`false`). One exception
+# Run commands until `STOP` (returns `true`) or an exception (`false`). One exception
 # handler per stretch of commands, not per chunk (an `enter` costs about as much as a
 # small chunk). Not inlined: on Julia 1.10 the frame that caught the exception would keep
 # it, and the arrays it refers to, alive while the worker waits for the next command.
@@ -538,9 +538,13 @@ end
             @atomic :release ws.cmd = 0
         end
     catch err
-        # (The dispatcher clears this worker's slot, see `dispatch!`)
-        pool.errs[k] = CapturedException(err, catch_backtrace())
-        @atomic :release ws.cmd = 0
+        # Thrown by the chunk, or into the task while it waited (an interrupt on its
+        # thread): then a command that arrived meanwhile, or `STOP`, is still to be read
+        if (@atomic :monotonic ws.cmd) == RUNNING
+            # (The dispatcher clears this worker's slot, see `dispatch!`)
+            pool.errs[k] = CapturedException(err, catch_backtrace())
+            @atomic :release ws.cmd = 0
+        end
     end
     return false
 end

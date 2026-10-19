@@ -49,3 +49,22 @@
         @test any(e -> e.exception isa CapturedException, excs)
     end
 end
+
+@testset "exception thrown into a waiting worker" begin
+    if NW > 1
+        old = ThreadTeams.spin_time()
+        ThreadTeams.set_spin_time!(0)
+        @test psum(collect(1:100)) == 5050
+        pool = @atomic ThreadTeams.POOL.pool
+        k = NW
+        @test timedwait(() -> (@atomic pool.sleepflags[k].sleeping), 10) === :ok
+        # An interrupt on the worker's thread before it read its command (here `STOP`,
+        # not notified) must not erase the command
+        @atomic pool.workers[k].cmd = ThreadTeams.STOP
+        schedule(pool.tasks[k], InterruptException(); error = true)
+        @test timedwait(() -> istaskdone(pool.tasks[k]), 10) === :ok
+        ThreadTeams.shutdown!()
+        ThreadTeams.set_spin_time!(old)
+        @test psum(collect(1:100)) == 5050
+    end
+end

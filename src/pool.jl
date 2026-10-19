@@ -145,11 +145,11 @@ end
 
 # Padding around the atomic fields the workers and the dispatcher hammer (a worker's
 # command, its sleep flag, the greedy counter), so that each has a cache line no other
-# field or neighbouring object shares: the field sits `CACHE_LINE - 8` bytes into the
-# object with `CACHE_LINE` bytes after it, so its line lies within the object at any
-# 16-byte aligned address. (A worker's command and closure form a 16-byte pair at
-# `CACHE_LINE - 16`.) Apple silicon has 128-byte lines, x86 and other AArch64 cores 64;
-# padding to 128 on every AArch64 CPU costs a few hundred bytes.
+# field or neighbouring object shares: the field sits one word short of `CACHE_LINE` bytes
+# into the object with `CACHE_LINE` bytes after it, so its line lies within the object at
+# any 16-byte aligned address. (A worker's command and closure form a two-word pair two
+# words short of `CACHE_LINE`.) Apple silicon has 128-byte lines, x86 and other AArch64
+# cores 64; padding to 128 on every AArch64 CPU costs a few hundred bytes.
 const CACHE_LINE = Sys.ARCH === :aarch64 ? 128 : 64
 const PAD_BEFORE = CACHE_LINE ÷ sizeof(Int) - 1
 const PAD_AFTER = CACHE_LINE ÷ sizeof(Int)
@@ -223,8 +223,8 @@ const unsetindex! = isdefined(Base, :unsetindex!) ? Base.unsetindex! : Base._uns
 @inline field_bytes(::Type{F}) where {F} = sizeof(Base.RefValue{F})
 # Whether chunk functions of type `F` go into the workers' own slots (`COPY_BYTES`)
 @inline own_slots(::Type{F}) where {F} = field_bytes(F) <= COPY_BYTES
-# A worker's command and the closure of the region (`job_closure`), a 16-byte pair at a
-# multiple of 16 bytes on a cache line of their own: one line transfer brings the worker
+# A worker's command and the closure of the region (`job_closure`), a two-word pair at a
+# multiple of two words on a cache line of their own: one line transfer brings the worker
 # both, and the rest of the region data inside the command (`cmd_base`).
 mutable struct WorkerState
     const _pad0::NTuple{PAD_BEFORE - 1, Int}

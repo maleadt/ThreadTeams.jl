@@ -7,7 +7,7 @@
         @test tmapreduce(identity, +, 1:10; scheduler = sched, init = 0.0) === 55.0
         @test treduce(+, Int[]; scheduler = sched) == 0
         @test_throws Exception treduce(max, Int[]; scheduler = sched)
-        @test treduce(*, 1:20; scheduler = sched) == factorial(20)
+        @test treduce(*, 1:20; scheduler = sched) == prod(1:20)   # wraps on 32-bit
         @test treduce(xor, 1:100; scheduler = sched) == reduce(xor, 1:100)
         # several reductions at once, with a tuple
         v = randn(503)

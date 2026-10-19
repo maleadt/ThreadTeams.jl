@@ -844,15 +844,18 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
     copies = own_slots(F)
     wslots = copies ? worker_slots(F, length(pool.workers)) : worker_slot_vector(F)
     base = cmd_base(n, skip, has_scope)
+    # Whether every worker of the region is idle (also when a chunk threw)
+    drained = false
     try
         # Decreasing chunk order: see `wake_children`
         for chunk in n:-1:2
             k = worker_for_chunk(chunk, skip)
-            # A worker can still be busy if a previous region was interrupted
+            # Normally idle (an interrupted region waits for its workers); detects a dead one
             if !wait_idle(pool, k)
                 # Take back the chunks already handed out before giving up
                 cancel_chunks(pool, chunk + 1, n, skip, base, wslots, copies)
                 wait_workers(pool, chunk + 1, n, skip)
+                drained = true
                 dead_worker_error(k)
             end
             @inbounds pool.errs[k] = nothing
@@ -877,6 +880,7 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
             # workers running when returning from the region
             cancel_chunks(pool, 2, n, skip, base, wslots, copies)
             wait_workers(pool, 2, n, skip)
+            drained = true
             rethrow()
         end
         # The chunks that their worker has not claimed yet: a greedy region only takes them
@@ -887,12 +891,17 @@ function dispatch!(pool::Pool, f::F, n::Int) where {F}
             steal_chunks(pool, slot, n, skip, base, wslots, copies)
         end
         wait_workers(pool, 2, n, skip)
+        drained = true
         for chunk in 2:n
             k = worker_for_chunk(chunk, skip)
             err = @inbounds pool.errs[k]
             err === nothing || throw_worker_error(err::CapturedException)
         end
     finally
+        # Thrown outside the chunks, e.g. an interrupt while waiting for the workers:
+        # running chunks use the region's slots, buffers and greedy counter, which the next
+        # region reuses, so wait for them before returning
+        drained || drain_workers(pool, f, n, skip, base, wslots, copies)
         # Keep neither the chunk function (`clear_slot!`), nor the scope, nor the chunks'
         # exceptions alive (every used worker is idle here, also when a chunk threw)
         clear_slot!(slot)
@@ -1002,6 +1011,24 @@ end
         wait_idle(pool, k) || (dead = k)
     end
     dead == 0 || dead_worker_error(dead)
+    return nothing
+end
+
+# Cancel the chunks of a region no worker has claimed and wait for the others, also when
+# interrupted again meanwhile (the region's exception is already on its way)
+@noinline function drain_workers(pool::Pool, f, n, skip, base, wslots, copies::Bool)
+    f isa GreedyJob && (@atomic :monotonic f.counter.next = typemax(Int) >> 1)
+    cancel_chunks(pool, 2, n, skip, base, wslots, copies)
+    for chunk in 2:n
+        k = worker_for_chunk(chunk, skip)
+        while true
+            try
+                wait_idle(pool, k)
+                break
+            catch
+            end
+        end
+    end
     return nothing
 end
 

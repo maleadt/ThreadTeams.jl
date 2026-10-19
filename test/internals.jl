@@ -25,11 +25,11 @@ end
             @test start + L <= base + sizeof(T)
         end
     end
-    # A worker's command and its closure form a 16-byte pair: always on the same line
+    # A worker's command and its closure form a two-word pair: always on the same line
     W = ThreadTeams.WorkerState
     off = Int(fieldoffset(W, findfirst(==(:cmd), fieldnames(W))))
-    @test off % 16 == 0
-    @test Int(fieldoffset(W, findfirst(==(:job), fieldnames(W)))) == off + 8
+    @test off % (2 * sizeof(Int)) == 0
+    @test Int(fieldoffset(W, findfirst(==(:job), fieldnames(W)))) == off + sizeof(Int)
 end
 
 @testset "command encoding" begin

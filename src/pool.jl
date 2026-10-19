@@ -1201,11 +1201,10 @@ task to finish first. The next parallel loop starts a new pool.
 Throws an error when called from inside a parallel loop.
 """
 function shutdown!()
+    # A region can not end while we wait in one of its chunks (on the pool or, while
+    # another task holds the pool, on spawned tasks: `run_tasks`)
+    in_region() && error("ThreadTeams.shutdown! called from inside a parallel loop")
     while !(@atomicreplace :acquire :monotonic POOL.busy false => true).success
-        # The region can not end while we wait in one of its chunks
-        if @atomic(POOL.owner) === current_task() || in_worker()
-            error("ThreadTeams.shutdown! called from inside a parallel loop")
-        end
         yield()
     end
     @atomic :monotonic POOL.owner = current_task()
@@ -1226,11 +1225,6 @@ function shutdown!()
         release_pool()
     end
     return nothing
-end
-
-function in_worker()
-    ct = current_task()
-    return isdefined(ct, :code) && ct.code isa WorkerCode
 end
 
 """

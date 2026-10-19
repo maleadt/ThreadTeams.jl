@@ -68,3 +68,66 @@ end
         @test psum(collect(1:100)) == 5050
     end
 end
+
+@testset "interrupted while waiting for the workers" begin
+    if NW > 1
+        main = current_task()
+        running = Threads.Atomic{Bool}(false)
+        gate = Threads.Atomic{Bool}(false)
+        returned = Threads.Atomic{Bool}(false)
+        finished = Threads.Atomic{Bool}(false)
+        for sched in (team, GPS(chunksize = 1))
+            running[] = false
+            gate[] = false
+            returned[] = false
+            finished[] = false
+            # Interrupt the caller while a worker runs a chunk, again while the caller waits
+            # for that chunk, and only then let the chunk finish
+            observer = @async begin
+                t = time()
+                while !running[] && time() - t < 10
+                    yield()
+                end
+                # no `sleep`: a caller that waits by yielding keeps the timers from running
+                schedule(main, InterruptException(); error = true)
+                yield()
+                t = time()
+                while time() - t < 0.2
+                    yield()
+                end
+                returned[] || schedule(main, InterruptException(); error = true)
+                yield()
+                t = time()
+                while time() - t < 0.2
+                    yield()
+                end
+                gate[] = true
+            end
+            err = try
+                tforeach(1:(4NW); scheduler = sched) do i
+                    t = time()
+                    if current_task() === main
+                        # don't take back the chunks of workers that are still waking up
+                        while !running[] && time() - t < 10
+                        end
+                    elseif !Threads.atomic_xchg!(running, true)
+                        while !gate[] && time() - t < 10
+                        end
+                        finished[] = true
+                    end
+                end
+                nothing
+            catch e
+                e
+            end
+            returned[] = true
+            # the loop returned only after its running chunk
+            @test finished[]
+            wait(observer)
+            @test err isa InterruptException
+            done = zeros(Int, 1000)
+            tforeach(i -> (done[i] += 1), 1:1000; scheduler = sched)
+            @test all(==(1), done)
+        end
+    end
+end
